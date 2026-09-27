@@ -1,0 +1,1169 @@
+"""Tests for the Discord layer: cog loading, commands and the ORM bridge."""
+
+import asyncio
+import ast
+from collections.abc import Iterable
+from inspect import getsource
+
+import discord
+from discord import InteractionType
+from discord.ext import commands
+from django.db import connections
+from django.test import SimpleTestCase, TransactionTestCase
+
+from blindtest import constants, services
+from blindtest.models import Answer, Game, Guess, Question, QuizType, Round
+from discordcore.mentions import user_mention
+from discordcore.models import Guild, Player
+
+from . import embeds
+from .bot import create_bot
+from .cogs.game import GameCog
+from .cogs.library import LibraryCog, question_autocomplete
+from .db import guild_for, player_for, run_db
+from .ui import (HOST_END_ID, SETUP_ADD_ID, SETUP_CLEAR_ID, SETUP_COPY_ID,
+                 SETUP_END_ID, SETUP_PUBLISH_ID, SETUP_REMOVE_ID,
+                 GuessModal, HostPanel, SetupPanel)
+
+
+def game_payload(**overrides) -> dict:
+    """Return a payload shaped like the ones the services return."""
+    payload = {'game_name': 'Fiesta', 'type_label': 'Blind test',
+               'type': 'BLIND_TEST', 'scoring_label': 'standard (fixed points)',
+               'index': 3, 'prompt': 'Guess it', 'media_url': '',
+               'question_text': 'Song (Band)', 'host_text': 'Song (Band)',
+               'answer_text': 'Song (Band)', 'expected': 'Song', 'options': [],
+               'prompt_set': True,
+               'queued': 7, 'answered': 2, 'right': 1, 'right_names': ['user43'],
+               'scores': [], 'teams': [], 'rounds': 1, 'answers': 2,
+               'available': 5, 'created_at': None, 'finished_at': None,
+               'game_id': 1, 'channel_id': 100}
+    payload.update(overrides)
+    return payload
+
+
+def embed_text(embed: discord.Embed) -> str:
+    """Return every text an embed displays."""
+    parts = [embed.title or '', embed.description or '']
+    if embed.footer and embed.footer.text:
+        parts.append(embed.footer.text)
+    parts.extend(field.name + field.value for field in embed.fields)
+    return ' '.join(parts)
+
+
+def answer_form(index: int = 1, quiz_type: str = 'BLIND_TEST',
+                options: list[dict] | None = None) -> dict:
+    """Return an answer form payload, as the services build it."""
+    return {'round_id': 1, 'index': index, 'type': quiz_type,
+            'options': options or []}
+
+
+class EmbedTests(SimpleTestCase):
+    """Public embeds name the game and stay within Discord's limits."""
+
+    def test_every_embed_names_the_game(self) -> None:
+        scores = [{'username': 'a', 'discord_name': 'A', 'points': 3}]
+        payload = game_payload(scores=scores)
+        built = [embeds.start_embed(payload, '<@1>'),
+                 embeds.round_embed(payload),
+                 embeds.reveal_embed(payload),
+                 embeds.scores_embed(
+                     payload, 'Round 3 scores',
+                     embeds.leader_line(scores, 'is currently winning')),
+                 embeds.recap_embed(payload)]
+        for embed in built:
+            with self.subTest(embed=embed.title):
+                self.assertIn('Fiesta', embed.title)
+
+    def test_the_announcement_shows_no_host_command(self) -> None:
+        embed = embeds.start_embed(game_payload(), '<@1>')
+        self.assertNotIn('/blindtest', embed_text(embed))
+        self.assertTrue(embed.footer.text is None)
+
+    def test_no_public_embed_leaks_the_answer_before_the_reveal(self) -> None:
+        payload = game_payload(prompt='Guess the song!', question_text='Guess the song!',
+                               answer_text='Zebra', expected='Zebra')
+        for embed in (embeds.start_embed(payload, '<@1>'),
+                      embeds.round_embed(payload)):
+            with self.subTest(embed=embed.title):
+                self.assertNotIn('Zebra', embed_text(embed))
+
+    def test_the_round_scores_share_the_shape_of_the_final_scores(self) -> None:
+        scores = [{'username': 'a', 'discord_name': 'A', 'points': 3}]
+        payload = game_payload(scores=scores,
+                               teams=[{'name': 'Reds', 'points': 3}])
+        round_scores = embeds.scores_embed(
+            payload, 'Round 3 scores',
+            embeds.leader_line(scores, 'is currently winning'))
+        final = embeds.recap_embed(payload)
+        self.assertEqual(round_scores.fields[0].name, 'Standings')
+        self.assertEqual(final.fields[0].name, 'Standings')
+        self.assertEqual(round_scores.footer.text, final.footer.text)
+        self.assertTrue(round_scores.title.endswith('scores'))
+        self.assertTrue(final.title.endswith('scores'))
+        self.assertEqual(round_scores.description, '🥇 A is currently winning!')
+        self.assertEqual(final.description, '🥇 A wins!')
+
+    def test_the_round_embed_shows_the_type_and_the_queue(self) -> None:
+        embed = embeds.round_embed(game_payload(queued=4))
+        self.assertIn('**Guess it**', embed.description)
+        self.assertEqual(embed.fields[0].value, '4 question(s) queued')
+        self.assertIn('Blind test', embed.fields[0].name)
+
+    def test_the_round_embed_never_links_to_the_media(self) -> None:
+        embed = embeds.round_embed(
+            game_payload(media_url='https://youtu.be/1'))
+        self.assertNotIn('Listen', embed_text(embed))
+
+    def test_the_reveal_links_to_the_media_of_the_question(self) -> None:
+        embed = embeds.reveal_embed(
+            game_payload(media_url='https://youtu.be/1'))
+        self.assertIn('[🎧 Listen](https://youtu.be/1)', embed.description)
+        self.assertNotIn('Listen',
+                         embed_text(embeds.reveal_embed(game_payload())))
+
+    def test_the_reveal_marks_the_right_multiple_choice_option(self) -> None:
+        embed = embeds.reveal_embed(game_payload(
+            type='MULTIPLE_CHOICE',
+            options=[{'pk': 1, 'label': 'Song'}, {'pk': 2, 'label': 'Other'}]))
+        self.assertIn('✅ Song', embed.description)
+        self.assertIn('❌ Other', embed.description)
+        self.assertIn('1 of 2', embed.fields[0].value)
+        self.assertEqual(embed.fields[1].name, 'Correct players')
+        self.assertIn('user43', embed.fields[1].value)
+
+    def test_the_recap_summarises_the_game(self) -> None:
+        embed = embeds.recap_embed(game_payload(
+            scores=[{'username': 'a', 'discord_name': 'A', 'points': 3}],
+            teams=[{'name': 'Reds', 'points': 3}], rounds=3, answers=9))
+        names = [field.name for field in embed.fields]
+        self.assertEqual(names, ['Standings', 'Teams', 'Rounds played',
+                                 'Answers given', 'Quiz type'])
+        self.assertEqual(embed.description, '🥇 A wins!')
+
+    def test_a_long_standings_list_says_how_many_players_are_left(self) -> None:
+        scores = [{'username': f'user{index}', 'discord_name': 'n' * 200,
+                   'points': index} for index in range(40)]
+        embed = embeds.recap_embed(game_payload(scores=scores))
+        standings = embed.fields[0]
+        self.assertEqual(standings.name, 'Standings')
+        self.assertLessEqual(len(standings.value), embeds.FIELD_VALUE_LIMIT)
+        self.assertIn('more players', standings.value)
+
+    def test_an_oversized_embed_is_trimmed_instead_of_failing(self) -> None:
+        payload = game_payload(prompt='p' * 5000, answer_text='a' * 5000)
+        for embed in (embeds.round_embed(payload), embeds.reveal_embed(payload)):
+            with self.subTest(embed=embed.title):
+                embeds.fit(embed)
+                self.assertLessEqual(len(embed.description),
+                                     embeds.DESCRIPTION_LIMIT)
+
+    def test_fields_are_capped_and_clipped(self) -> None:
+        embed = discord.Embed(title='t')
+        for index in range(40):
+            embed.add_field(name='n' * 500, value='v' * 2000)
+        embeds.fit(embed)
+        self.assertLessEqual(len(embed.fields), embeds.FIELD_LIMIT)
+        for field in embed.fields:
+            self.assertLessEqual(len(field.name), embeds.FIELD_NAME_LIMIT)
+            self.assertLessEqual(len(field.value), embeds.FIELD_VALUE_LIMIT)
+
+    def test_a_message_stays_under_the_total_limit(self) -> None:
+        scores = [{'username': f'user{index}', 'discord_name': 'n' * 200,
+                   'points': index} for index in range(40)]
+        payload = game_payload(scores=scores)
+        built = embeds.fit_all([embeds.reveal_embed(payload),
+                                embeds.scores_embed(
+                                    payload, 'Round 3 scores',
+                                    embeds.leader_line(scores, 'wins')),
+                                embeds.recap_embed(payload)])
+        self.assertLessEqual(sum(embeds.size(embed) for embed in built),
+                             embeds.TOTAL_LIMIT)
+
+    def test_post_clips_the_content(self) -> None:
+        channel = FakeChannel()
+        asyncio.run(embeds.post(channel, content='x' * 5000))
+        [content] = channel.contents
+        self.assertEqual(len(content), embeds.CONTENT_LIMIT)
+
+
+class FakeRole:
+    """Minimal stand-in for a ``discord.Role``."""
+
+    def __init__(self, role_id: int) -> None:
+        self.id = role_id
+
+
+class FakePermissions:
+    """Minimal stand-in for ``discord.Permissions``."""
+
+    def __init__(self, manage_guild: bool = False) -> None:
+        self.manage_guild = manage_guild
+
+
+class FakeMember:
+    """Minimal stand-in for a ``discord.Member``."""
+
+    def __init__(self, user_id: int, roles: Iterable[int] = (),
+                 manage_guild: bool = False) -> None:
+        self.id = user_id
+        self.name = f'user{user_id}'
+        self.roles = [FakeRole(role_id) for role_id in roles]
+        self.guild_permissions = FakePermissions(manage_guild)
+
+    @property
+    def mention(self) -> str:
+        return f'<@{self.id}>'
+
+
+class FakeGuild:
+    """Minimal stand-in for a ``discord.Guild``."""
+
+    def __init__(self, guild_id: int, name: str = 'Server') -> None:
+        self.id = guild_id
+        self.name = name
+
+
+class FakeChannel:
+    """Records the messages a flow posted in a channel."""
+
+    def __init__(self) -> None:
+        self.embeds = []
+        self.contents = []
+        self.messages = []
+
+    async def send(self, content=None, *, embed=None, embeds=(), view=None):
+        message = FakeMessage(500 + len(self.messages))
+        self.contents.append(content)
+        self.embeds.extend(embeds or ([embed] if embed else []))
+        self.messages.append(message)
+        return message
+
+
+class FakeClient:
+    """Stand-in for a client holding no channel in its cache."""
+
+    def get_channel(self, channel_id: int):
+        """Report the channel as not cached."""
+        return None
+
+
+class FakeMessage:
+    """A message that must never be edited through the channel endpoint."""
+
+    def __init__(self, message_id: int = 500) -> None:
+        self.id = message_id
+
+    async def edit(self, **kwargs) -> None:
+        """Fail, as an ephemeral message is not editable this way."""
+        raise AssertionError('edited a message the channel endpoint cannot see')
+
+
+class FakeResponse:
+    """Records how a flow answered, refusing a second answer."""
+
+    def __init__(self) -> None:
+        self.deferred = []
+        self.edits = []
+        self.modals = []
+        self.messages = []
+        self.answered = False
+
+    async def defer(self, **kwargs) -> None:
+        self.claim()
+        self.deferred.append(kwargs)
+
+    async def edit_message(self, *, view=None) -> None:
+        self.claim()
+        self.edits.append(view)
+
+    async def send_message(self, content: str, **kwargs) -> None:
+        self.claim()
+        self.messages.append(content)
+
+    async def send_modal(self, modal) -> None:
+        self.claim()
+        self.modals.append(modal)
+
+    def claim(self) -> None:
+        """Reject a second answer, as Discord does."""
+        if self.answered:
+            raise AssertionError('answered an interaction twice')
+        self.answered = True
+
+
+class FakeFollowup:
+    """Records the private messages a flow sent."""
+
+    def __init__(self) -> None:
+        self.sent = []
+        self.views = []
+
+    async def send(self, content=None, **kwargs) -> None:
+        self.sent.append(content)
+        self.views.append(kwargs.get('view'))
+
+
+class FakeInteraction:
+    """Minimal stand-in for a guild ``discord.Interaction``."""
+
+    def __init__(self,
+                 kind: InteractionType | None = None) -> None:
+        self.type = kind or InteractionType.application_command
+        self.guild = FakeGuild(1)
+        self.user = FakeMember(42)
+        self.channel = FakeChannel()
+        self.client = FakeClient()
+        self.channel_id = 100
+        self.message = (FakeMessage()
+                        if self.type is InteractionType.component else None)
+        self.response = FakeResponse()
+        self.followup = FakeFollowup()
+        self.original_edits = []
+        self.original_contents = []
+
+    async def edit_original_response(self, *, view=None, content=None) -> None:
+        """Record the update that completes a deferred message update."""
+        if not self.response.deferred:
+            raise AssertionError('updated a response that was never deferred')
+        self.original_edits.append(view)
+        self.original_contents.append(content)
+
+
+async def _slash_command_names() -> list[str]:
+    bot = create_bot()
+    await bot.load_cogs()
+    return sorted(command.qualified_name for command in bot.tree.walk_commands())
+
+
+async def _question_options(name: str) -> tuple[str, ...]:
+    """Return the options a ``/library question`` subcommand takes."""
+    bot = create_bot()
+    await bot.load_cogs()
+    command = next(command for command in bot.tree.walk_commands()
+                   if command.qualified_name == f'library question {name}')
+    return tuple(parameter.name for parameter in command.parameters)
+
+
+async def _loaded_bot() -> commands.Bot:
+    """Return a bot with its cogs loaded, the way ``setup_hook`` does it."""
+    bot = create_bot()
+    await bot.load_cogs()
+    return bot
+
+
+class BotSetupTests(SimpleTestCase):
+    def test_the_cog_registers_the_documented_commands(self) -> None:
+        names = asyncio.run(_slash_command_names())
+        self.assertEqual(names, [
+            'admin', 'admin host', 'admin host add', 'admin host list',
+            'admin host remove', 'blindtest', 'blindtest clear',
+            'blindtest copy', 'blindtest end', 'blindtest guess',
+            'blindtest next', 'blindtest panel', 'blindtest publish',
+            'blindtest queue', 'blindtest reveal', 'blindtest start',
+            'blindtest unqueue', 'library', 'library answer',
+            'library answer add', 'library question',
+            'library question add', 'library question edit', 'library variant',
+            'library variant add', 'library variant list',
+            'library variant remove', 'ping',
+        ])
+
+
+class GameControlTests(SimpleTestCase):
+    def test_the_controls_survive_a_bot_restart(self) -> None:
+        views = asyncio.run(_loaded_bot()).get_cog('GameCog').controls()
+        self.assertTrue(all(view.timeout is None for view in views))
+        self.assertTrue(all(view.is_persistent() for view in views))
+        self.assertEqual(
+            sorted(item.custom_id for view in views for item in view.children),
+            ['blindtest_host_end', 'blindtest_host_next',
+             'blindtest_host_queue', 'blindtest_host_reveal',
+             'blindtest_player_answer', 'blindtest_queue_pick',
+             'blindtest_setup_add', 'blindtest_setup_clear',
+             'blindtest_setup_copy', 'blindtest_setup_end',
+             'blindtest_setup_publish', 'blindtest_setup_remove'])
+
+    def test_the_cog_registers_its_controls_when_it_loads(self) -> None:
+        bot = asyncio.run(_loaded_bot())
+        self.assertEqual(
+            sorted({type(view).__name__ for view in bot.persistent_views}),
+            ['GamePanel', 'HostPanel', 'QueuePanel', 'SetupPanel'])
+
+    def test_the_controls_are_wired_to_the_cog(self) -> None:
+        cog = asyncio.run(_loaded_bot()).get_cog('GameCog')
+        for view in cog.controls():
+            with self.subTest(view=type(view).__name__):
+                self.assertIs(view.cog, cog)
+        for operation in ('ask_question', 'clear', 'copy_questions',
+                          'copy_selection', 'drop_selection', 'end_game',
+                          'open_guess_form', 'open_next_round', 'publish',
+                          'queue_question', 'queue_selection', 'record_guess',
+                          'reveal_round', 'send_setup_panel',
+                          'unqueue_question'):
+            with self.subTest(operation=operation):
+                self.assertTrue(callable(getattr(cog, operation, None)))
+
+
+class OrmBridgeTests(SimpleTestCase):
+    def test_the_discord_layer_never_touches_the_orm(self) -> None:
+        """Only the bridge may build ORM calls, so no lazy row can reach the loop."""
+        from . import ui
+        from .cogs import admin, game, library
+        for module in (admin, game, library, ui):
+            with self.subTest(module=module.__name__):
+                self.assertNotIn('.objects.', getsource(module))
+        with self.subTest(module=embeds.__name__):
+            self.assertNotIn('.objects.', getsource(embeds))
+
+
+class RunDbTests(TransactionTestCase):
+    def tearDown(self) -> None:
+        # The ORM thread owns its own connection; close it so the test
+        # database can be dropped at the end of the run.
+        asyncio.run(run_db(connections.close_all))
+
+    def test_run_db_returns_plain_values(self) -> None:
+        Answer.objects.create(text='Song')
+        self.assertEqual(asyncio.run(run_db(Answer.objects.count)), 1)
+
+    def test_results_are_evaluated_in_the_orm_thread(self) -> None:
+        Answer.objects.create(text='Song')
+        texts = asyncio.run(run_db(
+            lambda: list(Answer.objects.values_list('text', flat=True))))
+        self.assertEqual(texts, ['Song'])
+
+    def test_guild_for_creates_the_guild_row(self) -> None:
+        guild = asyncio.run(guild_for(FakeInteraction()))
+        self.assertEqual(guild.discord_id, 1)
+        self.assertEqual(guild.name, 'Server')
+        self.assertEqual(Guild.objects.count(), 1)
+        self.assertEqual(Player.objects.count(), 0)
+
+    def test_player_for_creates_the_player_row(self) -> None:
+        player = asyncio.run(player_for(FakeMember(42)))
+        self.assertEqual(player.discord_user_id, 42)
+        self.assertEqual(player.discord_name, 'user42')
+        self.assertEqual(Player.objects.count(), 1)
+
+    def test_domain_errors_cross_the_bridge(self) -> None:
+        guild = Guild.objects.create(discord_id=1, name='Server')
+        with self.assertRaises(PermissionError):
+            asyncio.run(run_db(services.require_host, guild, FakeMember(43)))
+
+
+class FlowResultTests(TransactionTestCase):
+    def tearDown(self) -> None:
+        asyncio.run(run_db(connections.close_all))
+
+    def _revealed_result(self) -> dict:
+        def build() -> dict:
+            guild = Guild.objects.create(discord_id=1, name='Server')
+            host = FakeMember(42)
+            services.add_host(
+                guild, user_mention(host.id), FakeMember(42, manage_guild=True))
+            game = services.start_game(guild, 100, host)
+            question = Question.objects.create(
+                expected_answer=Answer.objects.create(text='Song'),
+                secondary_answer=Answer.objects.create(text='Band'))
+            round_ = services.start_round(game, host, question)
+            services.submit_guess(
+                round_, Player.objects.from_discord(FakeMember(43)),
+                'Song', 'Band')
+            return services.reveal_round_result(round_, host)
+        return asyncio.run(run_db(build))
+
+    def test_reveal_result_crosses_the_bridge_without_lazy_queries(self) -> None:
+        result = self._revealed_result()
+        self.assertEqual(result['answer_text'], 'Song (Band)')
+        self.assertEqual([row['points'] for row in result['scores']], [2])
+
+    @staticmethod
+    def _picker_choices() -> list[dict]:
+        """Build a game with one unplayed question and return its picker choices."""
+        guild = Guild.objects.create(discord_id=1, name='Server')
+        host = FakeMember(42)
+        services.add_host(
+            guild, user_mention(host.id), FakeMember(42, manage_guild=True))
+        game = services.start_game(guild, 100, host)
+        Question.objects.create(
+            expected_answer=Answer.objects.create(text='Song'),
+            secondary_answer=Answer.objects.create(text='Band'))
+        return services.question_choices(game)
+
+    def test_picker_choices_cross_the_bridge_without_lazy_queries(self) -> None:
+        async def check() -> None:
+            # Assertions run on the event loop: a lazily loaded row would raise
+            # SynchronousOnlyOperation here, the way the reveal used to.
+            [choice] = await run_db(self._picker_choices)
+            self.assertEqual(choice['label'], 'Song (Band)')
+            self.assertIsInstance(choice['pk'], int)
+        asyncio.run(check())
+
+
+class FlowTestCase(TransactionTestCase):
+    """A guild with a host, a running game and a round in play."""
+
+    def tearDown(self) -> None:
+        asyncio.run(run_db(connections.close_all))
+
+    @staticmethod
+    def question(quiz_type: str, text: str, secondary: str) -> Question:
+        """Return a question the quiz type can play."""
+        expected = Answer.objects.create(text=text)
+        question = Question.objects.create(
+            prompt=f'Which song? ({text})' if quiz_type else '',
+            expected_answer=expected,
+            secondary_answer=Answer.objects.create(text=secondary))
+        if quiz_type == QuizType.MULTIPLE_CHOICE:
+            question.choices.set([expected,
+                                  Answer.objects.create(text=f'No {text}')])
+        return question
+
+    def start_game(self, quiz_type: str = '') -> None:
+        """Create the rows a flow works on, as the bot would have."""
+        guild = Guild.objects.create(discord_id=1, name='Server')
+        services.add_host(guild, user_mention(42),
+                          FakeMember(42, manage_guild=True))
+        game = services.start_game(guild, 100, FakeMember(42),
+                                   quiz_type=quiz_type or QuizType.BLIND_TEST)
+        services.start_round(game, FakeMember(42),
+                             self.question(quiz_type, 'Song', 'Band'))
+        self.question(quiz_type, 'Spare', 'Spare Band')
+
+    def prepare_guild(self) -> Guild:
+        """Create the guild row and its host, as the first command would."""
+        guild = Guild.objects.create(discord_id=1, name='Server')
+        services.add_host(guild, user_mention(42),
+                          FakeMember(42, manage_guild=True))
+        return guild
+
+    @staticmethod
+    def _run(cog_function, interaction, *args, **kwargs) -> LibraryCog:
+        """Run a decorated library command the way Discord would."""
+        cog = LibraryCog(create_bot())
+        asyncio.run(cog_function.callback(cog, interaction, *args, **kwargs))
+        return cog
+
+
+class EndGameFlowTests(FlowTestCase):
+    """The panel of a closed game must be updated through its interaction."""
+
+    @staticmethod
+    def _button(view: discord.ui.View, custom_id: str):
+        """Return the control of a view carrying that custom_id."""
+        return next(item for item in view.children
+                    if item.custom_id == custom_id)
+
+    def _click_end(self, interaction: FakeInteraction) -> None:
+        """Click the End button of a fresh panel, the way a host does."""
+        async def click() -> None:
+            panel = HostPanel(GameCog(create_bot()))
+            await self._button(panel, HOST_END_ID).callback(interaction)
+        asyncio.run(click())
+
+    def _run_end_command(self, interaction: FakeInteraction) -> bool:
+        async def run() -> bool:
+            return await GameCog(create_bot()).end_game(interaction)
+        return asyncio.run(run())
+
+    def test_the_end_button_closes_its_panel(self) -> None:
+        self.start_game()
+        interaction = FakeInteraction(InteractionType.component)
+        self._click_end(interaction)
+        self.assertEqual(interaction.response.deferred, [{}])
+        self.assertEqual(interaction.response.edits, [])
+        [view] = interaction.original_edits
+        self.assertEqual([item.custom_id for item in view.children],
+                         ['blindtest_host_next', 'blindtest_host_reveal',
+                          'blindtest_host_queue', 'blindtest_host_end'])
+        self.assertTrue(all(item.disabled for item in view.children))
+        game = Game.objects.get()
+        self.assertEqual(interaction.followup.sent,
+                         [f'{game.display_name} ended.'])
+        self.assertEqual(game.state, Game.State.FINISHED)
+        self.assertEqual(len(interaction.channel.embeds), 1)
+
+    def test_the_end_command_defers_instead_of_updating_a_message(self) -> None:
+        self.start_game()
+        interaction = FakeInteraction()
+        self.assertTrue(self._run_end_command(interaction))
+        self.assertEqual(interaction.response.deferred,
+                         [{'ephemeral': True, 'thinking': True}])
+        self.assertEqual(interaction.original_edits, [])
+        self.assertEqual(
+            interaction.followup.sent,
+            [f'{Game.objects.get().display_name} ended.'])
+
+    def test_ending_without_a_game_closes_the_stale_panel(self) -> None:
+        interaction = FakeInteraction(InteractionType.component)
+        self._click_end(interaction)
+        [view] = interaction.original_edits
+        self.assertTrue(all(item.disabled for item in view.children))
+        self.assertEqual(interaction.followup.sent,
+                         ['No blind test is running in this server.'])
+
+
+class AnswerFlowTests(FlowTestCase):
+    """The answer form follows the round type, from its primed payload."""
+
+    def _open_round_then_answer(self) -> tuple[FakeInteraction, FakeInteraction]:
+        """Open a round as the host, then click its Answer button as a player."""
+        services.reveal_round(Round.objects.get(), FakeMember(42))
+        host = FakeInteraction()
+        player = FakeInteraction(InteractionType.component)
+
+        async def run() -> None:
+            cog = GameCog(create_bot())
+            await cog.open_next_round(host)
+            player.message = host.channel.messages[0]
+            await cog.open_guess_form(player)
+
+        asyncio.run(run())
+        return host, player
+
+    def test_the_answer_button_uses_the_form_of_the_round(self) -> None:
+        self.start_game()
+        _, player = self._open_round_then_answer()
+        self.assertEqual(player.response.deferred, [])
+        [modal] = player.response.modals
+        current = services.current_round(Game.objects.get())
+        self.assertEqual(modal.form['round_id'], current.pk)
+        self.assertEqual(modal.form['type'], QuizType.BLIND_TEST)
+        self.assertIsNone(modal.pick)
+
+    def test_a_multiple_choice_round_offers_its_choices(self) -> None:
+        self.start_game(quiz_type=QuizType.MULTIPLE_CHOICE)
+        _, player = self._open_round_then_answer()
+        [modal] = player.response.modals
+        self.assertIsNone(modal.answer_input)
+        self.assertEqual([option.label for option in modal.pick.options],
+                         ['No Spare', 'Spare'])
+        components = modal.to_dict()['components']
+        self.assertEqual([component['type'] for component in components], [18, 18])
+        self.assertEqual(components[0]['component']['type'], 3)
+
+    def test_a_round_without_a_primed_form_asks_for_one_more_click(self) -> None:
+        self.start_game()
+        player = FakeInteraction(InteractionType.component)
+        click = FakeInteraction(InteractionType.component)
+
+        async def run() -> None:
+            cog = GameCog(create_bot())
+            await cog.open_guess_form(player)
+            [panel] = player.followup.views
+            await panel.children[0].callback(click)
+
+        asyncio.run(run())
+        self.assertEqual(player.response.deferred,
+                         [{'ephemeral': True, 'thinking': True}])
+        self.assertEqual(player.followup.sent, ['Your answer form is ready.'])
+        self.assertEqual(player.response.modals, [])
+        [modal] = click.response.modals
+        self.assertEqual(modal.form['type'], QuizType.BLIND_TEST)
+
+    def test_an_expired_form_is_reported_instead_of_failing(self) -> None:
+        interaction = FakeInteraction(InteractionType.component)
+
+        async def run() -> None:
+            await GameCog(create_bot()).show_form(interaction, 999)
+
+        asyncio.run(run())
+        self.assertEqual(interaction.response.messages,
+                         ['This form expired, click Answer again.'])
+        self.assertEqual(interaction.response.modals, [])
+
+    def test_a_prompt_less_round_shows_its_answer_once(self) -> None:
+        self.start_game()
+        services.reveal_round(Round.objects.get(), FakeMember(42))
+        services.create_round(Game.objects.get(), FakeMember(42),
+                              self.question('', 'Zebra', 'Stripes'))
+        host = FakeInteraction()
+
+        async def run() -> None:
+            await GameCog(create_bot()).open_next_round(host)
+
+        asyncio.run(run())
+        self.assertEqual(host.followup.sent, ['Round 2 opened: Zebra (Stripes).'])
+
+    def test_the_host_lines_show_the_question_and_its_answer(self) -> None:
+        self.start_game(quiz_type=QuizType.MULTIPLE_CHOICE)
+        services.reveal_round(Round.objects.get(), FakeMember(42))
+        host = FakeInteraction()
+
+        async def run() -> None:
+            await GameCog(create_bot()).open_next_round(host)
+
+        asyncio.run(run())
+        [opened] = host.followup.sent
+        self.assertIn('Which song? (Spare)', opened)
+        self.assertIn('answer: Spare (Spare Band)', opened)
+
+    def test_the_opened_round_links_to_the_media(self) -> None:
+        self.start_game()
+        Question.objects.filter(expected_answer__text='Spare').update(
+            media_url='https://youtu.be/1')
+        services.reveal_round(Round.objects.get(), FakeMember(42))
+        host = FakeInteraction()
+
+        async def run() -> None:
+            await GameCog(create_bot()).open_next_round(host)
+
+        asyncio.run(run())
+        [opened] = host.followup.sent
+        self.assertIn('[🎧 Listen](https://youtu.be/1)', opened)
+
+    def test_the_queued_round_links_to_the_media(self) -> None:
+        self.start_game()
+        spare = Question.objects.get(expected_answer__text='Spare')
+        spare.media_url = 'https://youtu.be/1'
+        spare.save(update_fields=['media_url'])
+        host = FakeInteraction()
+
+        async def run() -> None:
+            await GameCog(create_bot()).queue_question(host, str(spare.pk))
+
+        asyncio.run(run())
+        [queued] = host.followup.sent
+        self.assertIn('[🎧 Listen](https://youtu.be/1)', queued)
+
+    def test_the_queued_round_stays_plain_without_media(self) -> None:
+        self.start_game()
+        spare = Question.objects.get(expected_answer__text='Spare')
+        host = FakeInteraction()
+
+        async def run() -> None:
+            await GameCog(create_bot()).queue_question(host, str(spare.pk))
+
+        asyncio.run(run())
+        [queued] = host.followup.sent
+        self.assertNotIn('Listen', queued)
+
+    def test_the_second_field_is_named_and_hinted_after_the_model(self) -> None:
+        async def build() -> GuessModal:
+            return GuessModal(GameCog(create_bot()), answer_form())
+
+        modal = asyncio.run(build())
+        payload = modal.to_dict()
+        fields = [row['component'] for row in payload['components']]
+        self.assertEqual([field['custom_id'] for field in fields],
+                         ['blindtest_answer_text', 'blindtest_answer_secondary'])
+        self.assertEqual([row['label'] for row in payload['components']],
+                         ['Answer', 'Secondary answer'])
+        self.assertFalse(fields[1]['required'])
+        self.assertIn('Artist', fields[1]['placeholder'])
+
+    def test_the_form_records_the_secondary_answer(self) -> None:
+        self.start_game()
+        interaction = FakeInteraction(InteractionType.modal_submit)
+
+        async def submit() -> None:
+            modal = GuessModal(GameCog(create_bot()), answer_form())
+            modal.answer_input._value = 'Song'
+            modal.secondary_input._value = 'Band'
+            await modal.on_submit(interaction)
+
+        asyncio.run(submit())
+        guess = Guess.objects.get()
+        self.assertEqual((guess.text, guess.secondary_text), ('Song', 'Band'))
+        self.assertEqual(interaction.followup.sent,
+                         ['Answer recorded for round 1. '
+                          'The result comes with the reveal.'])
+
+    def test_the_form_records_the_picked_choice(self) -> None:
+        self.start_game(quiz_type=QuizType.MULTIPLE_CHOICE)
+        question = Round.objects.get().question
+        options = [{'pk': choice.pk, 'label': choice.text}
+                   for choice in question.choices.all()]
+        interaction = FakeInteraction(InteractionType.modal_submit)
+
+        async def submit() -> None:
+            modal = GuessModal(GameCog(create_bot()), answer_form(
+                quiz_type=QuizType.MULTIPLE_CHOICE, options=options))
+            chosen = next(option for option in options
+                          if option['label'] == 'Song')
+            modal.pick._values = [str(chosen['pk'])]
+            modal.secondary_input._value = 'Band'
+            await modal.on_submit(interaction)
+
+        asyncio.run(submit())
+        guess = Guess.objects.get()
+        self.assertEqual((guess.text, guess.secondary_text), ('Song', 'Band'))
+        self.assertTrue(guess.text_correct)
+        self.assertTrue(guess.secondary_correct)
+
+
+    def test_the_setup_pickers_accept_fewer_options_than_the_limit(self) -> None:
+        cog = asyncio.run(_loaded_bot()).get_cog('GameCog')
+        for choices, queued in (
+                ([{'pk': 1, 'label': 'Song (Band)', 'media': False}], None),
+                (None, [{'pk': 1, 'label': 'Song (Band)', 'media': False}]),
+                (None, None)):
+            with self.subTest(choices=choices, queued=queued):
+                panel = SetupPanel(cog, choices, queued)
+                [add, remove] = panel.children[:2]
+                self.assertLessEqual(add.max_values, len(add.options))
+                self.assertLessEqual(remove.max_values, len(remove.options))
+                self.assertLessEqual(len(panel.to_components()), 5)
+                options = [question for question in range(26)]
+                panel = SetupPanel(
+                    cog, [{'pk': question, 'label': f'Q{question}',
+                           'media': False} for question in options], None)
+                self.assertEqual(panel.children[0].max_values, 25)
+                self.assertLessEqual(len(panel.to_components()), 5)
+
+
+class SetupFlowTests(FlowTestCase):
+    """The setup panel prepares a game that publish announces."""
+
+    @staticmethod
+    def _control(view: discord.ui.View, custom_id: str):
+        """Return the control of a view carrying that custom_id."""
+        return next(item for item in view.children
+                    if item.custom_id == custom_id)
+
+    @staticmethod
+    def _click(control) -> FakeInteraction:
+        """Activate a setup control the way a host click would."""
+        click = FakeInteraction(InteractionType.component)
+        asyncio.run(control.callback(click))
+        return click
+
+    def _start(self, name: str = 'Fiesta'):
+        """Prepare a game through the start command and return its panel."""
+        self.prepare_guild()
+        host = FakeInteraction()
+        cog = GameCog(create_bot())
+        asyncio.run(cog.start_game(host, 'STANDARD', name))
+        return cog, host.followup.views[0], host
+
+    def test_start_prepares_the_game_and_sends_its_setup_controls(self) -> None:
+        _cog, panel, host = self._start()
+        self.assertIsInstance(panel, SetupPanel)
+        self.assertIn('Fiesta', host.followup.sent[0])
+        self.assertIn('0 question(s) queued', host.followup.sent[0])
+        game = Game.objects.get()
+        self.assertEqual(game.state, Game.State.SETUP)
+
+    def test_the_add_select_queues_the_picked_questions(self) -> None:
+        question = self.question('', 'Song', 'Band')
+        _cog, panel, _host = self._start()
+        select = self._control(panel, SETUP_ADD_ID)
+        select._values = [str(question.pk)]
+        click = self._click(select)
+        self.assertEqual(click.response.deferred, [{}])
+        [view] = click.original_edits
+        self.assertIsInstance(view, SetupPanel)
+        self.assertIn('1 question(s) queued', click.original_contents[0])
+        self.assertEqual(click.followup.sent,
+                         ['1 question(s) added, 0 skipped.'])
+        self.assertEqual(services.queued_count(Game.objects.get()), 1)
+
+    def test_the_remove_select_drops_the_picked_questions(self) -> None:
+        _cog, panel, _host = self._start()
+        queued = services.create_round(
+            Game.objects.get(), FakeMember(42),
+            self.question('', 'Queued', 'Band'))
+        select = self._control(panel, SETUP_REMOVE_ID)
+        select._values = [str(queued.pk)]
+        click = self._click(select)
+        self.assertEqual(click.followup.sent, ['1 question(s) dropped.'])
+        self.assertEqual(services.queued_count(Game.objects.get()), 0)
+
+    def test_the_clear_button_empties_the_queue(self) -> None:
+        _cog, panel, _host = self._start()
+        services.create_round(Game.objects.get(), FakeMember(42),
+                              self.question('', 'Queued', 'Band'))
+        click = self._click(self._control(panel, SETUP_CLEAR_ID))
+        self.assertEqual(click.followup.sent, ['1 question(s) dropped.'])
+        self.assertEqual(services.queued_count(Game.objects.get()), 0)
+
+    def test_the_copy_select_queues_the_questions_of_another_game(self) -> None:
+        guild = self.prepare_guild()
+        older = services.start_game(guild, 100, FakeMember(42))
+        services.start_round(older, FakeMember(42),
+                             self.question('', 'Old', 'Band'))
+        services.finish_game(older, FakeMember(42))
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).start_game(host, 'STANDARD', 'Fiesta'))
+        select = self._control(host.followup.views[0], SETUP_COPY_ID)
+        select._values = [str(older.pk)]
+        click = self._click(select)
+        self.assertEqual(click.followup.sent,
+                         ['1 question(s) added, 0 skipped.'])
+        self.assertEqual(
+            services.queued_count(Game.objects.get(name='Fiesta')), 1)
+
+
+    def test_publish_announces_the_game_and_swaps_in_the_host_panel(self) -> None:
+        _cog, panel, _host = self._start()
+        click = self._click(self._control(panel, SETUP_PUBLISH_ID))
+        game = Game.objects.get()
+        self.assertEqual(game.state, Game.State.RUNNING)
+        [view] = click.original_edits
+        self.assertIsInstance(view, HostPanel)
+        self.assertEqual(click.original_contents,
+                         ['Fiesta is live. Host controls:'])
+        self.assertEqual(click.followup.sent, ['Fiesta is published.'])
+        [embed] = click.channel.embeds
+        self.assertEqual(embed.title, 'Fiesta')
+
+    def test_publishing_twice_is_reported(self) -> None:
+        _cog, panel, _host = self._start()
+        button = self._control(panel, SETUP_PUBLISH_ID)
+        self._click(button)
+        again = self._click(button)
+        self.assertEqual(again.followup.sent,
+                         ['This game is already published.'])
+        self.assertEqual(again.original_edits, [])
+
+    def test_ending_a_game_being_prepared_closes_it_without_a_recap(self) -> None:
+        cog, _panel, _host = self._start()
+        command = FakeInteraction()
+        asyncio.run(cog.end_game(command))
+        self.assertEqual(Game.objects.get().state, Game.State.FINISHED)
+        self.assertEqual(
+            command.followup.sent,
+            ['Fiesta was closed before being published.'])
+        self.assertEqual(command.channel.embeds, [])
+
+    def test_ending_a_prepared_game_from_its_panel_disables_it(self) -> None:
+        _cog, panel, _host = self._start()
+        click = self._click(self._control(panel, SETUP_END_ID))
+        game = Game.objects.get()
+        self.assertEqual(game.state, Game.State.FINISHED)
+        self.assertEqual(click.followup.sent, ['Fiesta was closed before being published.'])
+        self.assertEqual(click.channel.embeds, [])
+        [view] = click.original_edits
+        self.assertEqual(
+            [item.custom_id for item in view.children],
+            ['blindtest_setup_add', 'blindtest_setup_remove',
+             'blindtest_setup_copy', 'blindtest_setup_publish',
+             'blindtest_setup_clear', 'blindtest_setup_end'])
+        self.assertTrue(all(item.disabled for item in view.children))
+        self.assertEqual(len(view.to_components()), 4)
+
+    def test_the_panel_command_reopens_the_setup_controls(self) -> None:
+        cog, _panel, _host = self._start()
+        command = FakeInteraction()
+        asyncio.run(cog.show_panel(command))
+        [view] = command.followup.views
+        self.assertIsInstance(view, SetupPanel)
+        self.assertIn('Fiesta', command.followup.sent[0])
+
+
+class LibraryVariantTests(FlowTestCase):
+    """The library commands split answer texts on the variant delimiter."""
+
+    def test_question_add_registers_the_variants_of_both_answers(self) -> None:
+        self.prepare_guild()
+        interaction = FakeInteraction()
+        self._run(LibraryCog.question_add, interaction,
+                  'Song | Song (Remastered)', 'Band | The Band')
+        answer = Answer.objects.get(text='Song')
+        self.assertEqual([variant.text for variant in answer.variants.all()],
+                         ['Song (Remastered)'])
+        secondary = Answer.objects.get(text='Band')
+        self.assertEqual([variant.text for variant in secondary.variants.all()],
+                         ['The Band'])
+        self.assertIn('1 variant(s)', interaction.followup.sent[0])
+
+    def test_the_variant_commands_manage_the_accepted_texts(self) -> None:
+        self.prepare_guild()
+        Answer.objects.create(text='Song')
+        added, listed, removed = (FakeInteraction(), FakeInteraction(),
+                                  FakeInteraction())
+        self._run(LibraryCog.variant_add, added, 'Song', 'Song (Remastered)')
+        self._run(LibraryCog.variant_list, listed, 'Song')
+        self._run(LibraryCog.variant_remove, removed, 'Song',
+                  'song (remastered)')
+        self.assertEqual(added.followup.sent,
+                         ['Variant saved: **Song (Remastered)**.'])
+        self.assertEqual(listed.followup.sent, ['**Song (Remastered)**'])
+        self.assertEqual(removed.followup.sent,
+                         ['Variant dropped: **song (remastered)**.'])
+        self.assertEqual(Answer.objects.get(text='Song').variants.count(), 0)
+
+    def test_a_repeated_variant_is_refused(self) -> None:
+        self.prepare_guild()
+        Answer.objects.create(text='Song')
+        added, repeated = FakeInteraction(), FakeInteraction()
+        self._run(LibraryCog.variant_add, added, 'Song', 'Remix')
+        self._run(LibraryCog.variant_add, repeated, 'Song', 'remix')
+        self.assertEqual(repeated.followup.sent,
+                         ['This variant is already registered.'])
+
+
+class LibraryQuestionTests(FlowTestCase):
+    """The question commands change the library of the server they run in."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.guild = self.prepare_guild()
+        self.question = services.add_question(
+            self.guild, FakeMember(42), 'Song', prompt='Guess it',
+            secondary_text='Band')
+        self.label = 'Guess it — answer: Song (Band)'
+
+    def edit(self, question: str = '', user: FakeMember | None = None,
+             **changes: str) -> FakeInteraction:
+        """Run the edit command the way Discord would and return its reply."""
+        interaction = FakeInteraction()
+        interaction.user = user or FakeMember(42)
+        self._run(LibraryCog.question_edit, interaction,
+                  question or str(self.question.pk), **changes)
+        return interaction
+
+    def test_the_command_changes_one_field(self) -> None:
+        interaction = self.edit(album='Album')
+        self.assertEqual(interaction.response.deferred, [{'ephemeral': True}])
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.album, 'Album')
+        self.assertEqual(interaction.followup.sent,
+                         [f'Question updated: **{self.label}**. '
+                          'Changed: `album`.'])
+
+    def test_several_options_are_changed_at_once(self) -> None:
+        interaction = self.edit(album='Album', prompt='Guess', year='2001')
+        self.question.refresh_from_db()
+        self.assertEqual((self.question.album, self.question.year),
+                         ('Album', 2001))
+        self.assertEqual(
+            interaction.followup.sent,
+            ['Question updated: **Guess — answer: Song (Band)**. '
+             'Changed: `prompt`, `year`, `album`.'])
+
+    def test_an_option_left_empty_keeps_its_field(self) -> None:
+        interaction = self.edit(prompt='', album='Album')
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.prompt, 'Guess it')
+        self.assertEqual(interaction.followup.sent,
+                         [f'Question updated: **{self.label}**. '
+                          'Changed: `album`.'])
+
+    def test_a_command_without_an_option_is_reported(self) -> None:
+        interaction = self.edit()
+        self.assertEqual(interaction.followup.sent, ['Nothing to change.'])
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.prompt, 'Guess it')
+
+    def test_the_command_takes_the_same_options_as_add(self) -> None:
+        added = asyncio.run(_question_options('add'))
+        self.assertEqual(added, constants.EDITABLE_FIELDS)
+        self.assertEqual(asyncio.run(_question_options('edit')),
+                         ('question',) + added)
+
+    def test_a_dash_drops_the_field(self) -> None:
+        interaction = self.edit(prompt='-')
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.prompt, '')
+        self.assertEqual(interaction.followup.sent,
+                         ['Question updated: **Song (Band)**. '
+                          'Changed: `prompt`.'])
+
+    def test_a_link_that_is_not_a_url_is_reported(self) -> None:
+        interaction = self.edit(media='youtu.be/1')
+        self.assertEqual(
+            interaction.followup.sent,
+            ['Give the media link as a full http:// or https:// URL.'])
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.media_url, '')
+
+    def test_the_report_shows_the_media_link_it_saved(self) -> None:
+        interaction = self.edit(media='https://youtu.be/1')
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.media_url, 'https://youtu.be/1')
+        self.assertEqual(
+            interaction.followup.sent,
+            [f'Question updated: **{self.label}**. Changed: `media`. '
+             'It links to [🎧 Listen](https://youtu.be/1).'])
+
+    def test_renaming_the_answer_reports_the_new_one(self) -> None:
+        interaction = self.edit(answer='Wonderwall | Wonderwall (Live)')
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.expected_answer.text, 'Wonderwall')
+        self.assertEqual(
+            [variant.text
+             for variant in self.question.expected_answer.variants.all()],
+            ['Wonderwall (Live)'])
+        self.assertEqual(
+            interaction.followup.sent,
+            ['Question updated: **Guess it — answer: Wonderwall (Band)**. '
+             'Changed: `answer`.'])
+
+    def test_a_question_that_is_gone_is_reported(self) -> None:
+        interaction = self.edit(album='Album', question='999')
+        self.assertEqual(
+            interaction.followup.sent,
+            ["This question is not in this server's library."])
+
+    def test_a_question_id_that_is_not_one_is_reported(self) -> None:
+        interaction = self.edit(album='Album', question='next')
+        self.assertEqual(interaction.followup.sent,
+                         ['That question no longer exists.'])
+
+    def test_only_hosts_edit_a_question(self) -> None:
+        interaction = self.edit(album='Album', user=FakeMember(43))
+        self.assertTrue(interaction.followup.sent[0].startswith('Only hosts'))
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.album, '')
+
+    def test_the_picker_flags_a_question_that_has_a_media_link(self) -> None:
+        services.edit_question(self.guild, FakeMember(42), self.question,
+                               media='https://youtu.be/1')
+        choices = asyncio.run(question_autocomplete(FakeInteraction(), 'song'))
+        self.assertEqual([(choice.name, choice.value) for choice in choices],
+                         [(f'🎵 {self.label}', str(self.question.pk))])
+
+    def test_question_add_saves_the_media_link(self) -> None:
+        interaction = FakeInteraction()
+        self._run(LibraryCog.question_add, interaction, 'Wonderwall',
+                  media='https://youtu.be/1')
+        question = Question.objects.get(expected_answer__text='Wonderwall')
+        self.assertEqual(question.media_url, 'https://youtu.be/1')
+        self.assertIn('Question saved: **Wonderwall**.',
+                      interaction.followup.sent[0])
+
+    def test_question_add_refuses_a_link_that_is_not_a_url(self) -> None:
+        interaction = FakeInteraction()
+        self._run(LibraryCog.question_add, interaction, 'Wonderwall',
+                  media='youtu.be/1')
+        self.assertEqual(
+            interaction.followup.sent,
+            ['Give the media link as a full http:// or https:// URL.'])
+        self.assertFalse(Answer.objects.filter(text='Wonderwall').exists())
+
+
+class DeferFirstTests(SimpleTestCase):
+    """Every flow must answer its interaction before touching the database."""
+
+    DB_CALLS = {'guild_for', 'player_for', 'run_db'}
+    # Autocomplete cannot be deferred: it answers with choices within 3 seconds.
+    EXEMPT = {'question_autocomplete', 'queued_autocomplete',
+              'game_autocomplete'}
+
+    @staticmethod
+    def _name(node) -> str | None:
+        return getattr(node, 'id', None) or getattr(node, 'attr', None)
+
+    def _lines(self, node, names: set[str]) -> list[int]:
+        return [call.lineno for call in ast.walk(node)
+                if isinstance(call, ast.Call)
+                and self._name(call.func) in names]
+
+    def test_every_flow_defers_before_its_first_database_call(self) -> None:
+        from .cogs import admin, game, library
+        for module in (admin, game, library):
+            for node in ast.walk(ast.parse(getsource(module))):
+                if not isinstance(node, ast.AsyncFunctionDef):
+                    continue
+                if node.name in self.EXEMPT:
+                    continue
+                work = self._lines(node, self.DB_CALLS)
+                if not work:
+                    continue
+                with self.subTest(flow=f'{module.__name__}.{node.name}'):
+                    defer = self._lines(node, {'defer'})
+                    self.assertTrue(defer, 'the flow never defers')
+                    self.assertLess(min(defer), min(work),
+                                    'the flow works on the database first')
+

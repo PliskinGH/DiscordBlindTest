@@ -1,0 +1,138 @@
+# DiscordBlindTest
+
+Django backend and discord.py bot running a blind test (music quiz) on Discord.
+
+## Requirements
+
+- Python 3.14 (`.python-version`)
+- PostgreSQL
+
+## Setup
+
+```sh
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+cp .env.example .env          # Windows: copy .env.example .env
+python manage.py migrate
+python manage.py createsuperuser
+```
+
+`.env` variables:
+
+| Variable | Description |
+| --- | --- |
+| `SECRET_KEY` | Django secret key (required when `DEBUG` is off) |
+| `DEBUG` | `True` or `False` |
+| `ALLOWED_HOSTS` | Space-separated hosts |
+| `DATABASE_URL` | `postgres://user:password@host:port/database` |
+| `DISCORD_TOKEN` | Bot token |
+| `TEST_GUILD_ID` | Guild IDs to sync slash commands to instantly, space-separated |
+
+## Discord application
+
+1. Create an application on https://discord.com/developers/applications, add a bot and copy its token into `DISCORD_TOKEN`.
+2. Invite the bot with the `bot` and `applications.commands` scopes.
+3. No privileged intent is needed.
+
+## Commands
+
+```sh
+python manage.py runbot       # run the Discord bot
+python manage.py runserver    # Django admin: questions, players, games
+python manage.py test         # test suite
+```
+
+## Slash commands
+
+| Command | Description |
+| --- | --- |
+| `/ping` | Gateway latency and number of games in the database |
+| `/blindtest start` | Prepare a game in this channel: optional name, quiz type and scoring mode (hosts only) |
+| `/blindtest publish` | Publish the game being prepared and announce it in the channel (hosts only) |
+| `/blindtest panel` | Reopen the private controls of the running game (hosts only) |
+| `/blindtest guess` | Submit your answer for the round in play (players) |
+| `/blindtest queue` | Queue the question of the next round, optionally played as another quiz type (hosts only) |
+| `/blindtest unqueue` | Drop a question queued for a round (hosts only) |
+| `/blindtest clear` | Drop every queued question of the game (hosts only) |
+| `/blindtest copy` | Queue the questions another game was played with (hosts only) |
+| `/blindtest next` | Open the next round: the queued question or a drawn one (hosts only) |
+| `/blindtest reveal` | Reveal the current round and publish the standings (hosts only) |
+| `/blindtest end` | End the game of this server. A game still being prepared closes without a recap (hosts only) |
+| `/admin host add` | Allow a user or a role to host (server administrators) |
+| `/admin host remove` | Withdraw host rights (server administrators) |
+| `/admin host list` | Show the hosts of this server (server administrators) |
+| `/library answer add` | Register an answer in this server's library (hosts) |
+| `/library variant add` | Accept another text for an answer, e.g. `Song (Remastered)` for `Song` (hosts) |
+| `/library variant list` | Show the variants accepted for an answer (hosts) |
+| `/library variant remove` | Stop accepting a variant (hosts) |
+| `/library question add` | Create a question, with multiple choice options when `choices` is given and a listening `media` link. Separate the accepted variants of an answer with `\|` (hosts) |
+| `/library question edit` | Change the fields of a question, with the options of `question add`: an option left out keeps its field, `-` drops it. The `answer` itself cannot be dropped (hosts) |
+
+## Usage
+
+- Host rights are per server:
+  - A server appears in the Django admin after the first command used in it.
+  - Its page lists hosts as Discord mentions — `<@123456789>` for a user, `<@&123456789>` for a role.
+  - Members with the Discord "Manage Server" permission can always host, and manage the host list with `/admin host ...`.
+
+- `/blindtest start` prepares a game without announcing it.
+  - The host receives a private setup panel to add, drop or copy questions.
+  - The panel runs the same operations as `/blindtest queue`, `/blindtest unqueue`, `/blindtest clear` and `/blindtest copy`.
+  - `/blindtest publish` announces the game in its channel and swaps the setup panel for the host panel.
+  - No round can open before the game is published.
+  - A game ended while it is still being prepared closes without a public recap.
+
+- Hosts drive a published game from the private panel sent by `/blindtest start` or `/blindtest panel`: next round, reveal, queue, end.
+  - `/blindtest panel` reopens it when Discord cleared it.
+  - Every round is posted with an **Answer** button opening the answer form of the round in play.
+  - The panel and the round buttons keep working after a bot restart: their state lives in the database.
+  - The answer form itself is primed per round: the first click after a reload asks for one more click before it opens.
+- Questions and answers belong to a server, or to the global library when their guild is empty:
+  - The global library is defined in the Django admin only.
+  - Every Discord change stays tied to the server it is made from.
+- An answer accepts alternative texts — variants:
+  - Variants are listed with `|` when a question is created (`Song | Song (Remastered)`), and managed afterwards with `/library variant add`, `/library variant list` and `/library variant remove`.
+  - A guess matching a variant of the expected answer is scored as correct.
+- `/library question edit` changes the fields of a question of the server the command runs in:
+  - It takes the options of `/library question add`; an option left out keeps its field.
+  - A value of `-` drops the field, except for `answer`: a question needs one.
+
+## Quiz types
+
+A game has a quiz type (blind test by default) and each round inherits it, or overrides it: the type decides how a round is played.
+
+| Type | Needs | Answer form |
+| --- | --- | --- |
+| Blind test | nothing beyond the expected answer | two text fields (answer and secondary answer) |
+| Open question | a prompt | two text fields |
+| Multiple choice | a prompt, at least two choices, and the expected answer among them | a select of the choices plus the secondary answer field |
+
+- A round whose type cannot play its question is refused.
+- A random draw skips questions the type cannot play.
+- A blind test round with no prompt shows a default one.
+
+## Embeds
+
+Every public embed is titled with the game name — the one given at `/blindtest start`, or `<type> #<number>` — and states the quiz type and the scoring mode.
+
+- A round embed shows the prompt only.
+- The answer appears with the reveal, written as `<Answer> (<Secondary answer>)`.
+- Scores are published in one shape, twice: `<game name> — Round N scores` and `<game name> — final scores`.
+- Each score embed leads with the leader in its description and lists the players in a `Standings` field.
+- All public messages go through `discordbot.embeds.post`:
+  - It clips the content and the embeds to Discord's limits (2000 characters of content, 4096 of description, 25 fields, 6000 per message).
+  - It adds an "and N more" note instead of dropping players silently.
+
+## Deployment
+
+Any host able to run PostgreSQL, the environment variables above, and two long-running processes works.
+
+- `Procfile` declares these three for the platforms (Heroku, Dokku, and the like) that read one:
+  - `web` process: `gunicorn discordblindtest.wsgi:application`.
+  - `worker` process: `python manage.py runbot`.
+  - Release phase: `python manage.py migrate --no-input`.
+- Elsewhere, start the commands yourself and keep `web` (if you want to use the web admin) and `worker` (the bot iself) running.
+- `python manage.py collectstatic --no-input` fills `STATIC_ROOT` (`staticfiles/`), at build time (already handled by herokuish buildpacks).
+- WhiteNoise serves those files from the `web` process.
+- `SECRET_KEY` is required as soon as `DEBUG` is off, which is the default, so set it with `ALLOWED_HOSTS` (space-separated) before the first build.
+- `DATABASE_URL` is read by `dj-database-url`, so a database add-on of the host is enough.

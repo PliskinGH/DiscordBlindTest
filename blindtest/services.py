@@ -970,9 +970,9 @@ def submit_multiple_choice(round_: Round, player: Player, choice_pk: int,
 
 def _scored_rounds(game: Game,
                    rounds: Iterable[Round] | None = None) -> list[Round]:
-    """Return the rounds of a game with their guesses, ready to be scored."""
+    """Return the rounds a game played, with their guesses, ready to score."""
     if rounds is None:
-        rounds = game.rounds.prefetch_related(
+        rounds = game.rounds.filter(started_at__isnull=False).prefetch_related(
             Prefetch('guesses', queryset=Guess.objects
                      .select_related('player').order_by('submitted_at', 'pk')))
     return list(rounds)

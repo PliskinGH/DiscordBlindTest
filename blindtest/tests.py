@@ -1005,6 +1005,16 @@ class QuizTypeTests(GameTestCase):
         self.assertEqual(recap['game_name'], self.game.display_name)
         self.assertEqual([row['points'] for row in recap['scores']], [2])
 
+    def test_a_queued_question_is_not_a_round_played(self):
+        round_ = services.start_round(self.game, self.host, self.question)
+        services.submit_guess(round_, self.player_row, 'Song', 'Band')
+        services.reveal_round(round_, self.host)
+        services.create_round(self.game, self.host, self.other_question)
+        recap = services.recap_result(self.game, self.host)
+        self.assertEqual(recap['rounds'], 1)
+        self.assertEqual(recap['answers'], 1)
+        self.assertEqual([row['points'] for row in recap['scores']], [2])
+
     def test_a_round_edited_in_the_admin_is_validated(self):
         round_ = services.start_round(self.game, self.host, self.question)
         round_.type = QuizType.MULTIPLE_CHOICE

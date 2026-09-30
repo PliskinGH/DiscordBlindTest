@@ -5,19 +5,21 @@ tests and the future web front end call them directly.
 """
 
 import logging
+import random
 from collections.abc import Iterable
 from urllib.parse import urlsplit
 
 from django.db import transaction
-from django.db.models import Count, F, Max, Q
+from django.db.models import Count, F, Max, Prefetch, Q
 from django.utils import timezone
 from django.utils.translation import gettext as _
 
+from discordcore.cache import LIST_TIMEOUT, STATE_TIMEOUT, remember
 from discordcore.members import DiscordMember, can_manage_guild, member_mentions
 from discordcore.mentions import normalize_mention
 from discordcore.models import Guild, Host, Player
 
-from . import matching, scoring
+from . import caching, matching, scoring
 from .constants import (CLEAR_VALUE, EDITABLE_FIELDS, MAX_CHOICES,
                         MAX_LISTED_PLAYERS, MAX_YEAR)
 from .models import (Answer, AnswerVariant, Game, Guess, Question, QuizType, Round,
@@ -32,7 +34,7 @@ def is_host(guild: Guild, host_member: DiscordMember) -> bool:
     Hosts are the guild's host mentions (a Discord user or a role), plus the
     members Discord allows to manage the server.
     """
-    hosts = set(guild.hosts.values_list('mention', flat=True))
+    hosts = set(hosts_of(guild))
     return bool(hosts & member_mentions(host_member)) or can_manage_guild(host_member)
 
 
@@ -74,7 +76,9 @@ def remove_host(guild: Guild, mention: str,
 
 def hosts_of(guild: Guild) -> list[str]:
     """Return the mentions allowed to host games in the guild."""
-    return list(guild.hosts.values_list('mention', flat=True))
+    return remember(caching.hosts_key(guild),
+                    lambda: list(guild.hosts.values_list('mention', flat=True)),
+                    STATE_TIMEOUT)
 
 
 def add_answer(guild: Guild, host_member: DiscordMember, text: str) -> Answer:
@@ -452,13 +456,14 @@ def publish_game_result(game: Game, host_member: DiscordMember) -> dict:
 def recap_result(game: Game, host_member: DiscordMember) -> dict:
     """Close a game and return what its final recap shows."""
     game = finish_game(game, host_member)
-    rounds = list(game.rounds.all())
+    rounds = _scored_rounds(game)
     return {'game_id': game.pk, 'game_name': game.display_name,
             'type_label': QuizType(game.type).label.capitalize(),
             'scoring_label': game.get_scoring_mode_display(),
-            'scores': game_scores(game), 'teams': game_team_scores(game),
+            'scores': game_scores(game, rounds),
+            'teams': game_team_scores(game, rounds),
             'rounds': len(rounds),
-            'answers': sum(round_.guesses.count() for round_ in rounds),
+            'answers': sum(len(round_.guesses.all()) for round_ in rounds),
             'finished_at': game.finished_at,
             'channel_id': game.channel_id}
 
@@ -500,28 +505,38 @@ def queued_count(game: Game) -> int:
     return game.rounds.filter(started_at__isnull=True).count()
 
 
-def question_option(question: Question) -> dict:
-    """Return how a host picks a question: its pk, its label and its media."""
+def question_option(question: Question, guild: Guild | None = None) -> dict:
+    """Return how a host picks a question: its pk, its label and its media.
+
+    ``guild`` marks the questions of that guild's own library, as opposed to the
+    ones of the global library every guild plays.
+    """
     return {'pk': question.pk, 'label': question_line(question, with_answer=True),
-            'media': bool(question.media_url)}
+            'media': bool(question.media_url),
+            'own': guild is not None and question.guild_id == guild.pk}
 
 
 def queued_choices(game: Game, text: str = '',
                    limit: int = MAX_CHOICES) -> list[dict]:
     """Return the questions queued for a game, as picker options."""
+    choices = remember(caching.queued_options_key(game),
+                       lambda: _render_queued_options(game), LIST_TIMEOUT)
+    wanted = text.strip().casefold()
+    return [choice for choice in choices
+            if not wanted or wanted in choice['label'].casefold()][:limit]
+
+
+def _render_queued_options(game: Game) -> list[dict]:
+    """Return the options of the rounds a game queued, in round order."""
     rounds = (game.rounds.filter(started_at__isnull=True)
               .select_related('question__expected_answer',
                               'question__secondary_answer')
-              .order_by('index'))
-    wanted = text.strip().lower()
-    choices = []
-    for round_ in rounds:
-        label = f'#{round_.index} {question_line(round_.question, with_answer=True)}'
-        if wanted and wanted not in label.lower():
-            continue
-        choices.append({'pk': round_.pk, 'label': label,
-                        'media': bool(round_.question.media_url)})
-    return choices[:limit]
+              .order_by('index')[:caching.QUEUE_CACHE_LIMIT])
+    return [{'pk': round_.pk,
+             'label': f'#{round_.index} '
+                      f'{question_line(round_.question, with_answer=True)}',
+             'media': bool(round_.question.media_url)}
+            for round_ in rounds]
 
 
 def queue_questions(game: Game, host_member: DiscordMember, pks: Iterable[int],
@@ -595,13 +610,41 @@ def game_option(game: Game, questions: int) -> str:
 def game_choices(guild: Guild, current: Game | None = None, text: str = '',
                  limit: int = MAX_CHOICES) -> list[dict]:
     """Return the games of a guild a host may copy questions from."""
-    games = Game.objects.filter(guild=guild).annotate(questions=Count('rounds'))
+    options = remember(caching.game_options_key(guild),
+                       lambda: _render_game_options(guild), LIST_TIMEOUT)
+    if options is False:
+        return _query_game_choices(guild, current, text, limit)
+    wanted = text.strip().casefold()
+    return [option for option in options
+            if (current is None or option['pk'] != current.pk)
+            and (not wanted or wanted in option['label'].casefold())][:limit]
+
+
+def _annotated_games(guild: Guild):
+    """Return the games of a guild, newest first, with their round count."""
+    return (Game.objects.filter(guild=guild)
+            .annotate(questions=Count('rounds')).order_by('-created_at'))
+
+
+def _render_game_options(guild: Guild) -> list[dict] | bool:
+    """Return the options of a guild's games, False when there are too many."""
+    rows = list(_annotated_games(guild)[:caching.GAME_CACHE_LIMIT + 1])
+    if len(rows) > caching.GAME_CACHE_LIMIT:
+        return False
+    return [{'pk': game.pk, 'label': game_option(game, game.questions)}
+            for game in rows]
+
+
+def _query_game_choices(guild: Guild, current: Game | None, text: str,
+                        limit: int) -> list[dict]:
+    """Return a guild's game options straight from the database."""
+    games = _annotated_games(guild)
     if current is not None:
         games = games.exclude(pk=current.pk)
     if text.strip():
         games = games.filter(name__icontains=text.strip())
     return [{'pk': game.pk, 'label': game_option(game, game.questions)}
-            for game in games.order_by('-created_at')[:limit]]
+            for game in games[:limit]]
 
 
 def require_question_fits(question: Question, quiz_type: str) -> None:
@@ -692,29 +735,68 @@ def playable_questions(game: Game, quiz_type: str):
 
 def pick_question(game: Game, quiz_type: str = QuizType.BLIND_TEST) -> Question:
     """Return a random unplayed question the quiz type can play."""
-    question = playable_questions(game, quiz_type).order_by('?').first()
-    if question is None:
+    candidates = playable_questions(game, quiz_type)
+    pks = list(candidates.values_list('pk', flat=True).distinct())
+    if not pks:
         raise ValueError(_("No unplayed question left for this round type. "
                            "Add more questions in the admin."))
-    return question
+    return candidates.get(pk=random.choice(pks))
+
+
+def _visible_questions(guild: Guild):
+    """Return the questions a guild plays, its own and the global ones."""
+    return (Question.objects
+            .select_related('expected_answer', 'secondary_answer')
+            .filter(Q(guild__isnull=True) | Q(guild=guild))
+            .order_by('-created_at'))
+
+
+def _render_library_options(guild: Guild) -> list[dict] | bool:
+    """Return the options of the libraries a guild plays, False when too many."""
+    rows = list(_visible_questions(guild)[:caching.LIBRARY_CACHE_LIMIT + 1])
+    if len(rows) > caching.LIBRARY_CACHE_LIMIT:
+        return False
+    return [question_option(question, guild) for question in rows]
+
+
+def _library_options(guild: Guild) -> list[dict] | None:
+    """Return the cached options of a guild's libraries, None when too many."""
+    options = remember(caching.library_options_key(guild),
+                       lambda: _render_library_options(guild), LIST_TIMEOUT)
+    return None if options is False else options
+
+
+def _used_question_pks(game: Game) -> tuple[int, ...]:
+    """Return the questions the game already queued or played."""
+    return remember(caching.used_questions_key(game),
+                    lambda: tuple(game.rounds.values_list('question', flat=True)),
+                    LIST_TIMEOUT)
 
 
 def question_choices(game: Game, text: str = '',
                      limit: int = MAX_CHOICES) -> list[dict]:
     """Return the pk and label of questions the game did not use yet."""
-    used = game.rounds.values('question')
-    queryset = (Question.objects
-                .select_related('expected_answer', 'secondary_answer')
-                .filter(Q(guild__isnull=True) | Q(guild=game.guild))
-                .exclude(pk__in=used))
+    options = _library_options(game.guild)
+    if options is None:
+        return _query_question_choices(game, text, limit)
+    used = _used_question_pks(game)
+    wanted = text.strip().casefold()
+    return [option for option in options
+            if option['pk'] not in used
+            and (not wanted or wanted in option['label'].casefold())][:limit]
+
+
+def _query_question_choices(game: Game, text: str, limit: int) -> list[dict]:
+    """Return the unplayed options of a game straight from the database."""
+    queryset = _visible_questions(game.guild).exclude(
+        pk__in=game.rounds.values('question'))
     text = text.strip()
     if text:
         queryset = queryset.filter(
             Q(prompt__icontains=text)
             | Q(expected_answer__text__icontains=text)
             | Q(secondary_answer__text__icontains=text))
-    return [question_option(question)
-            for question in queryset.order_by('-created_at')[:limit]]
+    return [question_option(question, game.guild) for question in queryset[:limit]]
 
 
 def question_by_pk(pk: int) -> Question:
@@ -727,17 +809,25 @@ def question_by_pk(pk: int) -> Question:
 def library_choices(guild: Guild, text: str = '',
                     limit: int = MAX_CHOICES) -> list[dict]:
     """Return the questions of a guild's own library, as picker options."""
-    queryset = (Question.objects
-                .select_related('expected_answer', 'secondary_answer')
-                .filter(guild=guild))
+    options = _library_options(guild)
+    if options is None:
+        return _query_library_choices(guild, text, limit)
+    wanted = text.strip().casefold()
+    return [option for option in options
+            if option['own']
+            and (not wanted or wanted in option['label'].casefold())][:limit]
+
+
+def _query_library_choices(guild: Guild, text: str, limit: int) -> list[dict]:
+    """Return the options of a guild's own library straight from the database."""
+    queryset = _visible_questions(guild).filter(guild=guild)
     text = text.strip()
     if text:
         queryset = queryset.filter(
             Q(prompt__icontains=text)
             | Q(expected_answer__text__icontains=text)
             | Q(secondary_answer__text__icontains=text))
-    return [question_option(question)
-            for question in queryset.order_by('-created_at')[:limit]]
+    return [question_option(question, guild) for question in queryset[:limit]]
 
 
 def round_display(round_: Round) -> dict:
@@ -830,6 +920,11 @@ def reveal_round(round_: Round, host_member: DiscordMember) -> Round:
     return round_
 
 
+def _team_for(round_: Round, player: Player) -> Team | None:
+    """Return the team of a player in the game of a round, if any."""
+    return Team.objects.filter(game_id=round_.game_id, players=player).first()
+
+
 def submit_guess(round_: Round, player: Player, text: str = '',
                  secondary_text: str = '') -> Guess:
     """Record a player's first answer for a round; the points come at reveal."""
@@ -843,10 +938,13 @@ def submit_guess(round_: Round, player: Player, text: str = '',
     secondary_text = secondary_text.strip()
     if not text and not secondary_text:
         raise ValueError(_("Give at least an answer."))
-    expected = round_.question.expected_answer
-    secondary = round_.question.secondary_answer
+    question = (Question.objects
+                .select_related('expected_answer', 'secondary_answer')
+                .get(pk=round_.question_id))
+    expected = question.expected_answer
+    secondary = question.secondary_answer
     guess = Guess.objects.create(
-        round=round_, player=player, team=team_of(round_.game, player),
+        round=round_, player=player, team=_team_for(round_, player),
         text=text, secondary_text=secondary_text,
         text_correct=matching.matches_any(
             text, expected.text,
@@ -856,7 +954,7 @@ def submit_guess(round_: Round, player: Player, text: str = '',
                 secondary_text, secondary.text,
                 [variant.text for variant in secondary.variants.all()])
             if secondary else False))
-    logger.info('Game %s round %s: %s answered', round_.game.pk, round_.index,
+    logger.info('Game %s round %s: %s answered', round_.game_id, round_.index,
                 player)
     return guess
 
@@ -870,12 +968,29 @@ def submit_multiple_choice(round_: Round, player: Player, choice_pk: int,
     return submit_guess(round_, player, choice.text, secondary_text)
 
 
-def game_scores(game: Game) -> list[dict]:
-    """Return the total points per player of the game, best first."""
+def _scored_rounds(game: Game,
+                   rounds: Iterable[Round] | None = None) -> list[Round]:
+    """Return the rounds of a game with their guesses, ready to be scored."""
+    if rounds is None:
+        rounds = game.rounds.prefetch_related(
+            Prefetch('guesses', queryset=Guess.objects
+                     .select_related('player').order_by('submitted_at', 'pk')))
+    return list(rounds)
+
+
+def game_scores(game: Game,
+                rounds: Iterable[Round] | None = None) -> list[dict]:
+    """Return the total points per player of the game, best first.
+
+    ``rounds`` spares a caller that read the rounds of the game already.
+    """
     totals: dict[int, dict] = {}
-    for round_ in game.rounds.all():
-        points = scoring.round_points(round_)
-        for guess in round_.guesses.select_related('player'):
+    for round_ in _scored_rounds(game, rounds):
+        guesses = list(round_.guesses.all())
+        points = scoring.round_points(round_, guesses)
+        for guess in guesses:
+            if guess.player is None:
+                continue
             row = totals.setdefault(guess.player_id, {
                 'username': guess.player.username,
                 'discord_name': guess.player.discord_name,
@@ -915,13 +1030,15 @@ def team_of(game: Game, player: Player) -> Team | None:
     return player.teams.filter(game=game).first()
 
 
-def game_team_scores(game: Game) -> list[dict]:
+def game_team_scores(game: Game,
+                     rounds: Iterable[Round] | None = None) -> list[dict]:
     """Return the total points per team of the game, best first."""
     totals = {team.pk: {'name': team.name, 'points': 0}
               for team in game.teams.all()}
-    for round_ in game.rounds.all():
-        points = scoring.round_points(round_)
-        for guess in round_.guesses.exclude(team=None):
+    for round_ in _scored_rounds(game, rounds):
+        guesses = list(round_.guesses.all())
+        points = scoring.round_points(round_, guesses)
+        for guess in guesses:
             if guess.team_id in totals:
                 totals[guess.team_id]['points'] += points.get(guess.pk, 0)
     return sorted(totals.values(), key=lambda row: (-row['points'], row['name']))

@@ -8,6 +8,7 @@ from inspect import getsource
 import discord
 from discord import InteractionType
 from discord.ext import commands
+from django.core.cache import cache
 from django.db import connections
 from django.test import SimpleTestCase, TransactionTestCase
 
@@ -417,6 +418,10 @@ class OrmBridgeTests(SimpleTestCase):
 
 
 class RunDbTests(TransactionTestCase):
+    def setUp(self) -> None:
+        # A cached row outlives a test and would point at a rolled back one.
+        cache.clear()
+
     def tearDown(self) -> None:
         # The ORM thread owns its own connection; close it so the test
         # database can be dropped at the end of the run.
@@ -452,6 +457,9 @@ class RunDbTests(TransactionTestCase):
 
 
 class FlowResultTests(TransactionTestCase):
+    def setUp(self) -> None:
+        cache.clear()
+
     def tearDown(self) -> None:
         asyncio.run(run_db(connections.close_all))
 
@@ -502,6 +510,9 @@ class FlowResultTests(TransactionTestCase):
 
 class FlowTestCase(TransactionTestCase):
     """A guild with a host, a running game and a round in play."""
+
+    def setUp(self) -> None:
+        cache.clear()
 
     def tearDown(self) -> None:
         asyncio.run(run_db(connections.close_all))

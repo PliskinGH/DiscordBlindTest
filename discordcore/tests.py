@@ -1,10 +1,17 @@
 """Tests for the Discord data models: players, guilds, hosts and mentions."""
 
+import sys
+import warnings
 from collections.abc import Iterable
+from unittest import mock
 
+from django.core.cache import cache
+from django.core.cache.backends.base import CacheKeyWarning
 from django.core.exceptions import ValidationError
 from django.db.utils import IntegrityError
 from django.test import SimpleTestCase, TestCase
+
+from discordblindtest import settings as project_settings
 
 from . import members, mentions
 from .models import Guild, Host, Player
@@ -45,6 +52,10 @@ class FakeDiscordGuild:
 
 
 class PlayerTests(TestCase):
+    def setUp(self):
+        # A cached row outlives a test and would point at a rolled back one.
+        cache.clear()
+
     def test_from_discord_creates_the_player(self):
         player = Player.objects.from_discord(FakeDiscordUser(42, 'alice'))
         self.assertEqual(player.discord_user_id, 42)
@@ -62,6 +73,19 @@ class PlayerTests(TestCase):
         player = Player.objects.from_discord(FakeDiscordUser(42, 'alice2'))
         self.assertEqual(player.discord_name, 'alice2')
         self.assertEqual(player.username, 'alice2')
+
+    def test_a_read_player_costs_no_query(self):
+        Player.objects.from_discord(FakeDiscordUser(42, 'alice'))
+        with self.assertNumQueries(0):
+            player = Player.objects.from_discord(FakeDiscordUser(42, 'alice'))
+        self.assertEqual(player.discord_name, 'alice')
+
+    def test_the_cached_row_is_refreshed_by_a_rename(self):
+        Player.objects.from_discord(FakeDiscordUser(42, 'alice'))
+        Player.objects.from_discord(FakeDiscordUser(42, 'alice2'))
+        with self.assertNumQueries(0):
+            player = Player.objects.from_discord(FakeDiscordUser(42, 'alice2'))
+        self.assertEqual(player.discord_name, 'alice2')
 
     def test_a_manually_renamed_player_keeps_their_username(self):
         player = Player.objects.from_discord(FakeDiscordUser(42, 'alice'))
@@ -125,6 +149,9 @@ class PlayerTests(TestCase):
 
 
 class GuildTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
     def test_from_discord_creates_the_guild(self):
         guild = Guild.objects.from_discord(FakeDiscordGuild(1, 'Server'))
         self.assertEqual(guild.discord_id, 1)
@@ -141,9 +168,21 @@ class GuildTests(TestCase):
         guild = Guild.objects.from_discord(FakeDiscordGuild(1, 'Renamed'))
         self.assertEqual(guild.name, 'Renamed')
 
+    def test_a_read_guild_costs_no_query(self):
+        Guild.objects.from_discord(FakeDiscordGuild(1, 'Server'))
+        with self.assertNumQueries(0):
+            guild = Guild.objects.from_discord(FakeDiscordGuild(1, 'Server'))
+        self.assertEqual(guild.name, 'Server')
+
+    def test_a_cached_guild_is_renamed_in_the_database_too(self):
+        Guild.objects.from_discord(FakeDiscordGuild(1, 'Server'))
+        Guild.objects.from_discord(FakeDiscordGuild(1, 'Renamed'))
+        self.assertEqual(Guild.objects.get(discord_id=1).name, 'Renamed')
+
 
 class HostTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.guild = Guild.objects.create(discord_id=1, name='Server')
 
     def test_a_user_mention_is_normalised_on_save(self):
@@ -202,3 +241,52 @@ class MemberTests(SimpleTestCase):
         self.assertFalse(members.can_manage_guild(FakeDiscordUser(1, 'alice')))
         self.assertTrue(members.can_manage_guild(
             FakeDiscordUser(1, 'alice', manage_guild=True)))
+
+class CacheLocationTests(SimpleTestCase):
+    """The cache location, on a database of its own while the tests run."""
+
+    REDIS_URL = 'redis://127.0.0.1:6379/1'
+
+    def test_without_a_redis_url_the_memory_cache_is_used(self):
+        self.assertEqual(project_settings.cache_location(None), 'blindtest')
+
+    def test_a_redis_url_is_kept_outside_the_tests(self):
+        with mock.patch.object(sys, 'argv', ['manage.py', 'runbot']):
+            self.assertEqual(project_settings.cache_location(self.REDIS_URL),
+                             self.REDIS_URL)
+
+    def test_the_tests_run_on_another_database_of_the_same_url(self):
+        index = project_settings.CACHE_TEST_INDEX
+        self.assertEqual(project_settings.cache_location(self.REDIS_URL),
+                         f'redis://127.0.0.1:6379/{index}')
+
+    def test_a_url_without_a_database_is_given_the_test_one(self):
+        index = project_settings.CACHE_TEST_INDEX
+        self.assertEqual(project_settings.cache_location('redis://127.0.0.1:6379'),
+                         f'redis://127.0.0.1:6379/{index}')
+
+    def test_the_credentials_and_the_query_survive(self):
+        index = project_settings.CACHE_TEST_INDEX
+        url = 'rediss://:secret@example.com:6380/3?ssl_cert_reqs=none'
+        self.assertEqual(
+            project_settings.cache_location(url),
+            f'rediss://:secret@example.com:6380/{index}?ssl_cert_reqs=none')
+
+
+class CacheKeyTests(TestCase):
+    """No Discord name may reach a cache key, which refuses spaces."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_a_name_with_a_space_stays_out_of_the_keys(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            Guild.objects.from_discord(
+                FakeDiscordGuild(1, "Pliskin's Bot Test Server"))
+            Player.objects.from_discord(
+                FakeDiscordUser(2, 'a name with spaces'))
+        self.assertEqual(
+            [str(warning.message) for warning in caught
+             if issubclass(warning.category, CacheKeyWarning)], [])
+

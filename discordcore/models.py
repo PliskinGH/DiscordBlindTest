@@ -4,6 +4,8 @@ from django.contrib.auth.models import AbstractUser, UserManager
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
+from .cache import (STATE_TIMEOUT, guild_row_key, player_row_key, remember,
+                    store)
 from .members import DiscordGuild, DiscordUser
 from .mentions import normalize_mention, parse_mention, validate_mention
 
@@ -12,7 +14,18 @@ class PlayerManager(UserManager):
     """Creates players from Discord accounts, which is how the bot meets them."""
 
     def from_discord(self, discord_user: DiscordUser) -> 'Player':
-        """Return the player linked to ``discord_user``, creating it when missing."""
+        """Return the player linked to ``discord_user``, creating it when missing.
+
+        A cached row is served as is while it holds the name Discord reports.
+        """
+        key = player_row_key(discord_user.id)
+        player = remember(key, lambda: self._sync(discord_user), STATE_TIMEOUT)
+        if player.discord_name == (discord_user.name or None):
+            return player
+        return store(key, self._sync(discord_user), STATE_TIMEOUT)
+
+    def _sync(self, discord_user: DiscordUser) -> 'Player':
+        """Return the row of a Discord account, keeping its names up to date."""
         name = discord_user.name or None
         if name:
             self._release_stale(name, discord_user.id)
@@ -84,7 +97,18 @@ class GuildManager(models.Manager):
     """Keeps the Discord servers the bot answered in."""
 
     def from_discord(self, discord_guild: DiscordGuild) -> 'Guild':
-        """Return the guild known by the bot, creating it when missing."""
+        """Return the guild known by the bot, creating it when missing.
+
+        A cached row is served as is while it holds the name Discord reports.
+        """
+        key = guild_row_key(discord_guild.id)
+        guild = remember(key, lambda: self._sync(discord_guild), STATE_TIMEOUT)
+        if guild.name == discord_guild.name:
+            return guild
+        return store(key, self._sync(discord_guild), STATE_TIMEOUT)
+
+    def _sync(self, discord_guild: DiscordGuild) -> 'Guild':
+        """Return the row of a Discord server, refreshing its name."""
         guild, created = self.get_or_create(
             discord_id=discord_guild.id,
             defaults={'name': discord_guild.name},

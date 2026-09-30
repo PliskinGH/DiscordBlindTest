@@ -6,6 +6,7 @@ Django backend and discord.py bot running a blind test (music quiz) on Discord.
 
 - Python 3.14 (`.python-version`)
 - PostgreSQL
+- Redis (optional)
 
 ## Setup
 
@@ -19,14 +20,15 @@ python manage.py createsuperuser
 
 `.env` variables:
 
-| Variable | Description |
-| --- | --- |
-| `SECRET_KEY` | Django secret key (required when `DEBUG` is off) |
-| `DEBUG` | `True` or `False` |
-| `ALLOWED_HOSTS` | Space-separated hosts |
-| `DATABASE_URL` | `postgres://user:password@host:port/database` |
-| `DISCORD_TOKEN` | Bot token |
-| `TEST_GUILD_ID` | Guild IDs to sync slash commands to instantly, space-separated |
+| Variable | Required | Format | Description |
+| --- | --- | --- | --- |
+| `DISCORD_TOKEN` | Yes | | Discord application Bot token |
+| `SECRET_KEY` | Yes | | Django secret key (required when `DEBUG` is off) |
+| `DEBUG` | Yes | `True` or `False` | `False` in production |
+| `ALLOWED_HOSTS` | Yes | | Space-separated hosts |
+| `DATABASE_URL` | Yes | `postgres://user:password@host:port/database` | Database used by the bot
+| `TEST_GUILD_ID` | No | | Guild IDs to sync slash commands to instantly, space-separated |
+| `REDIS_URL` | No | `redis://host:port/index` | Cache shared by the web process and the bot |
 
 ## Discord application
 
@@ -136,3 +138,4 @@ Any host able to run PostgreSQL, the environment variables above, and two long-r
 - WhiteNoise serves those files from the `web` process.
 - `SECRET_KEY` is required as soon as `DEBUG` is off, which is the default, so set it with `ALLOWED_HOSTS` (space-separated) before the first build.
 - `DATABASE_URL` is read by `dj-database-url`, so a database add-on of the host is enough.
+- `REDIS_URL` is optional and read as is by Django's Redis cache backend: you can set it via your host (e.g. on dokku: `dokku redis:create`, then `dokku redis:link`), and it is what makes one cache shared by the `web` and `worker` processes.

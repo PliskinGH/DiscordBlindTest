@@ -11,7 +11,9 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
@@ -93,6 +95,45 @@ WSGI_APPLICATION = 'discordblindtest.wsgi.application'
 DATABASES = {
     'default': dj_database_url.config(conn_max_age=600,
                                       conn_health_checks=True),
+}
+
+
+# Cache
+# https://docs.djangoproject.com/en/6.1/ref/settings/#caches
+
+REDIS_URL = os.environ.get('REDIS_URL')
+
+# The tests clear the cache by flushing a whole Redis database, so they run on
+# another one, the way they run on a database of their own.
+TEST_COMMANDS = ('test', 'testserver')
+CACHE_TEST_INDEX = int(os.environ.get('CACHE_TEST_INDEX', 15))
+
+
+def running_tests() -> bool:
+    """Return True when the command being run is the test suite."""
+    return len(sys.argv) > 1 and sys.argv[1] in TEST_COMMANDS
+
+
+def cache_location(redis_url: str | None) -> str:
+    """Return the cache location, on the test database when running tests."""
+    if not redis_url:
+        return 'blindtest'
+    if not running_tests():
+        return redis_url
+    return urlunsplit(urlsplit(redis_url)._replace(path=f'/{CACHE_TEST_INDEX}'))
+
+
+CACHES = {
+    'default': {
+        'BACKEND': ('django.core.cache.backends.redis.RedisCache' if REDIS_URL
+                    else 'django.core.cache.backends.locmem.LocMemCache'),
+        'LOCATION': cache_location(REDIS_URL),
+        'KEY_PREFIX': 'blindtest',
+        # Entries carry their own lifetime; this one only catches the rest.
+        'TIMEOUT': 3600,
+        # A cache that stops answering must not hold the bot's commands.
+        'OPTIONS': {'socket_timeout': 2, 'socket_connect_timeout': 2},
+    },
 }
 
 

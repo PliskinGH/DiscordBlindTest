@@ -1,16 +1,20 @@
 """Tests for the blind test game rules."""
 
 from collections.abc import Iterable
+from unittest import mock
 
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.db import connection
 from django.db.models import ProtectedError
 from django.db.utils import IntegrityError
 from django.test import SimpleTestCase, TestCase
+from django.test.utils import CaptureQueriesContext
 
 from discordcore.mentions import role_mention, user_mention
 from discordcore.models import Guild, Player
 
-from . import matching, services
+from . import caching, matching, services
 from .constants import DEFAULT_BLIND_TEST_PROMPT
 from .models import (Answer, AnswerVariant, Game, Guess, Question, QuizType,
                      ScoringMode)
@@ -45,6 +49,8 @@ class GameTestCase(TestCase):
     """A guild with its host, a plain player member and two questions."""
 
     def setUp(self):
+        # A cached row outlives a test and would point at a rolled back one.
+        cache.clear()
         self.guild = Guild.objects.create(discord_id=1, name='Server')
         self.other_guild = Guild.objects.create(discord_id=2, name='Other')
         self.host = FakeMember(42)
@@ -1175,3 +1181,127 @@ class VariantTests(GameTestCase):
         self.assertEqual(services.variants_of(self.guild, self.host, 'Live Band'),
                          ['Live Band (Remix)'])
 
+
+class CacheTests(GameTestCase):
+    """A derived list is read once, and a write drops what it changes."""
+
+    def test_the_hosts_of_a_guild_are_read_once(self):
+        services.hosts_of(self.guild)
+        with self.assertNumQueries(0):
+            self.assertIn('<@42>', services.hosts_of(self.guild))
+
+    def test_a_new_host_is_seen_at_once(self):
+        services.hosts_of(self.guild)
+        with self.captureOnCommitCallbacks(execute=True):
+            services.add_host(self.guild, user_mention(50), self.admin)
+        self.assertIn('<@50>', services.hosts_of(self.guild))
+
+    def test_a_removed_host_disappears_at_once(self):
+        services.hosts_of(self.guild)
+        with self.captureOnCommitCallbacks(execute=True):
+            services.remove_host(self.guild, user_mention(42), self.admin)
+        self.assertNotIn('<@42>', services.hosts_of(self.guild))
+
+    def test_the_guild_row_is_read_once(self):
+        member = FakeMember(7)
+        guild = Guild.objects.from_discord(member)
+        with self.assertNumQueries(0):
+            self.assertEqual(Guild.objects.from_discord(member).pk, guild.pk)
+
+    def test_the_player_row_is_read_once(self):
+        member = FakeMember(99)
+        player = Player.objects.from_discord(member)
+        with self.assertNumQueries(0):
+            self.assertEqual(Player.objects.from_discord(member).pk, player.pk)
+
+    def test_the_question_options_are_read_once(self):
+        game = self.start_game()
+        services.question_choices(game)
+        with self.assertNumQueries(0):
+            self.assertTrue(services.question_choices(game))
+
+    def test_the_question_options_search_the_labels(self):
+        game = self.start_game()
+        found = services.question_choices(game, 'other')
+        self.assertEqual([choice['label'] for choice in found], ['Other'])
+
+    def test_a_new_question_is_offered_at_once(self):
+        game = self.start_game()
+        services.question_choices(game)
+        with self.captureOnCommitCallbacks(execute=True):
+            services.add_question(self.guild, self.host, 'Fresh Song')
+        labels = [choice['label'] for choice in services.question_choices(game)]
+        self.assertTrue(any('Fresh Song' in label for label in labels))
+
+    def test_an_edited_answer_is_seen_at_once(self):
+        game = self.start_game()
+        services.question_choices(game)
+        with self.captureOnCommitCallbacks(execute=True):
+            services.edit_question(self.guild, self.host, self.question,
+                                   answer='Renamed')
+        labels = [choice['label'] for choice in services.question_choices(game)]
+        self.assertTrue(any('Renamed' in label for label in labels))
+
+    def test_a_played_question_leaves_the_picker(self):
+        game = self.start_game()
+        played = services.question_choices(game)[0]['pk']
+        with self.captureOnCommitCallbacks(execute=True):
+            services.start_round(game, self.host,
+                                 services.question_by_pk(played))
+        left = [choice['pk'] for choice in services.question_choices(game)]
+        self.assertNotIn(played, left)
+
+    def test_the_library_options_are_read_once(self):
+        services.library_choices(self.guild)
+        with self.assertNumQueries(0):
+            self.assertEqual(services.library_choices(self.guild), [])
+
+    def test_the_queued_options_are_read_once(self):
+        game = self.start_game()
+        services.create_round(game, self.host, self.question, index=1)
+        services.queued_choices(game)
+        with self.assertNumQueries(0):
+            self.assertEqual(len(services.queued_choices(game)), 1)
+
+    def test_the_game_options_are_read_once(self):
+        self.start_game()
+        services.game_choices(self.guild)
+        with self.assertNumQueries(0):
+            self.assertEqual(len(services.game_choices(self.guild)), 1)
+
+    def test_a_library_too_large_to_cache_falls_back_to_the_database(self):
+        game = self.start_game()
+        with mock.patch.object(caching, 'LIBRARY_CACHE_LIMIT', 1):
+            pks = [choice['pk'] for choice in services.question_choices(game)]
+        self.assertIn(self.question.pk, pks)
+        self.assertIn(self.other_question.pk, pks)
+
+
+class ScoreboardQueryTests(GameTestCase):
+    """A scoreboard reads the rounds of a game once, whatever their number."""
+
+    def _play(self, rounds: int) -> Game:
+        """Return a game with as many played, answered and revealed rounds."""
+        game = self.start_game()
+        for _count in range(rounds):
+            round_ = services.start_round(game, self.host, self.question)
+            services.submit_guess(round_, self.player_row, 'Song')
+            services.reveal_round(round_, self.host)
+        return game
+
+    def test_the_player_scores_do_not_grow_with_the_rounds(self):
+        def queries(rounds: int) -> int:
+            game = self._play(rounds)
+            with CaptureQueriesContext(connection) as captured:
+                services.game_scores(game)
+            services.finish_game(game, self.host)
+            return len(captured)
+        self.assertEqual(queries(1), queries(3))
+
+    def test_the_recap_does_not_grow_with_the_rounds(self):
+        def queries(rounds: int) -> int:
+            game = self._play(rounds)
+            with CaptureQueriesContext(connection) as captured:
+                services.recap_result(game, self.host)
+            return len(captured)
+        self.assertEqual(queries(1), queries(3))

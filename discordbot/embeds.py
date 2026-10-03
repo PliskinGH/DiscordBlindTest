@@ -145,7 +145,7 @@ def title(payload: dict, suffix: str) -> str:
     return f'{payload["game_name"]} — {suffix}'
 
 
-def start_embed(payload: dict, host_mention: str) -> discord.Embed:
+def announce_embed(payload: dict, host_mention: str) -> discord.Embed:
     """Return the announcement of a new game."""
     embed = discord.Embed(
         title=payload['game_name'],

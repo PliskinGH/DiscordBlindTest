@@ -16,7 +16,7 @@ from discordcore.models import Guild, Player
 
 from . import caching, matching, services
 from .constants import DEFAULT_BLIND_TEST_PROMPT
-from .models import (Answer, AnswerVariant, Game, Guess, Question, QuizType,
+from .models import (Answer, AnswerVariant, Game, Guess, Question, QuizType, Round,
                      ScoringMode)
 
 
@@ -74,16 +74,16 @@ class GameTestCase(TestCase):
         self.other_question = Question.objects.create(
             expected_answer=Answer.objects.create(text='Other'))
 
-    def start_game(self, guild: Guild | None = None,
+    def create_game(self, guild: Guild | None = None,
                    host_member: FakeMember | None = None) -> Game:
-        """Start a game in a guild, hosted by the given member."""
-        return services.start_game(guild or self.guild, 100,
+        """Create a game in a guild, hosted by the given member."""
+        return services.create_game(guild or self.guild, 100,
                                    host_member or self.host)
 
 
 class GameTests(GameTestCase):
-    def test_a_listed_host_starts_a_game(self):
-        game = self.start_game()
+    def test_a_listed_host_creates_a_game(self):
+        game = self.create_game()
         self.assertEqual(game.state, Game.State.RUNNING)
         self.assertEqual(game.host, self.host_player)
         self.assertEqual(game.guild, self.guild)
@@ -91,102 +91,127 @@ class GameTests(GameTestCase):
 
     def test_the_host_player_row_is_created_on_demand(self):
         services.add_host(self.guild, user_mention(70), self.admin)
-        game = self.start_game(host_member=FakeMember(70))
+        game = self.create_game(host_member=FakeMember(70))
         self.assertEqual(game.host.discord_user_id, 70)
         self.assertEqual(game.host.username, 'user70')
 
-    def test_a_member_holding_a_host_role_starts_a_game(self):
+    def test_a_member_holding_a_host_role_creates_a_game(self):
         services.add_host(self.guild, role_mention(7), self.admin)
-        game = self.start_game(host_member=FakeMember(44, roles=[7]))
+        game = self.create_game(host_member=FakeMember(44, roles=[7]))
         self.assertEqual(game.host.discord_user_id, 44)
 
-    def test_a_server_manager_starts_a_game(self):
-        game = self.start_game(host_member=FakeMember(45, manage_guild=True))
+    def test_a_server_manager_creates_a_game(self):
+        game = self.create_game(host_member=FakeMember(45, manage_guild=True))
         self.assertEqual(game.host.discord_user_id, 45)
 
-    def test_a_plain_player_is_not_allowed_to_start_a_game(self):
+    def test_a_plain_player_is_not_allowed_to_create_a_game(self):
         with self.assertRaises(PermissionError):
-            self.start_game(host_member=self.player)
+            self.create_game(host_member=self.player)
 
     def test_a_host_of_another_guild_is_not_allowed_here(self):
         services.add_host(self.other_guild, user_mention(99), self.admin)
         with self.assertRaises(PermissionError):
-            self.start_game(host_member=FakeMember(99))
+            self.create_game(host_member=FakeMember(99))
 
     def test_only_one_game_runs_at_a_time(self):
-        self.start_game()
+        self.create_game()
         with self.assertRaises(ValueError):
-            self.start_game()
+            self.create_game()
 
     def test_only_hosts_end_a_game(self):
-        game = self.start_game()
+        game = self.create_game()
         with self.assertRaises(PermissionError):
             services.finish_game(game, self.player)
 
     def test_finishing_reveals_the_round_in_progress(self):
-        game = self.start_game()
-        round_ = services.start_round(game, self.host, self.question)
-        services.finish_game(game, self.host)
+        game = self.create_game()
+        round_ = Round.objects.get(
+            pk=services.start_round(game, self.host, self.question)['round_id'])
+        services.submit_guess(round_, self.player_row, 'Song', 'Band')
+        result = services.finish_game(game, self.host)
         round_.refresh_from_db()
         game.refresh_from_db()
         self.assertTrue(round_.is_revealed)
         self.assertEqual(game.state, Game.State.FINISHED)
         self.assertIsNotNone(game.finished_at)
+        # The reveal travels back so the caller can publish the answer.
+        self.assertEqual(result['reveal']['round_id'], round_.pk)
+        self.assertEqual(result['reveal']['answer_text'], 'Song (Band)')
+        self.assertEqual(result['reveal']['right'], 1)
+        # The recap counts the round the ending revealed.
+        self.assertEqual(result['rounds'], 1)
+        self.assertEqual(result['answers'], 1)
+        self.assertEqual([score['points'] for score in result['scores']], [2])
+
+    def test_finishing_a_game_without_an_open_round_reveals_nothing(self):
+        game = self.create_game()
+        result = services.finish_game(game, self.host)
+        self.assertIsNone(result['reveal'])
+        self.assertEqual(result['rounds'], 0)
+
+    def test_finishing_a_revealed_round_publishes_it_again(self):
+        game = self.create_game()
+        round_ = Round.objects.get(
+            pk=services.start_round(game, self.host, self.question)['round_id'])
+        services.reveal_round(round_, self.host)
+        result = services.finish_game(game, self.host)
+        self.assertIsNone(result['reveal'])
+        self.assertEqual(result['rounds'], 1)
 
     def test_finishing_twice_is_refused(self):
-        game = self.start_game()
+        game = self.create_game()
         services.finish_game(game, self.host)
         with self.assertRaises(ValueError):
             services.finish_game(game, self.host)
 
-    def test_a_new_game_can_start_after_the_previous_one_ended(self):
-        game = self.start_game()
+    def test_a_new_game_can_be_created_after_the_previous_one_ended(self):
+        game = self.create_game()
         services.finish_game(game, self.host)
-        game = self.start_game()
+        game = self.create_game()
         self.assertEqual(game.state, Game.State.RUNNING)
 
     def test_the_host_picks_the_scoring_mode(self):
-        game = services.start_game(self.guild, 100, self.host,
+        game = services.create_game(self.guild, 100, self.host,
                                    ScoringMode.FIRST_ONLY)
         self.assertEqual(game.scoring_mode, ScoringMode.FIRST_ONLY)
 
     def test_an_unknown_scoring_mode_is_refused(self):
         with self.assertRaises(ValueError):
-            services.start_game(self.guild, 100, self.host, 'WILD')
+            services.create_game(self.guild, 100, self.host, 'WILD')
 
     def test_a_guild_with_games_cannot_be_deleted(self):
-        self.start_game()
+        self.create_game()
         with self.assertRaises(ProtectedError):
             self.guild.delete()
 
     def test_a_game_without_a_channel_follows_the_guild_default(self):
         services.set_default_channel(self.guild, 555, self.admin)
-        game = services.start_game(self.guild, None, self.host,
+        game = services.create_game(self.guild, None, self.host,
                                    invoking_id=100)
         self.assertEqual(game.channel_id, 555)
 
     def test_the_guild_default_wins_over_the_invoking_channel(self):
         services.set_default_channel(self.guild, 555, self.admin)
-        game = services.start_game(self.guild, None, self.host,
+        game = services.create_game(self.guild, None, self.host,
                                    invoking_id=100)
         self.assertEqual(game.channel_id, 555)
 
     def test_a_game_channel_wins_over_the_guild_default(self):
         services.set_default_channel(self.guild, 555, self.admin)
-        game = services.start_game(self.guild, 777, self.host, invoking_id=100)
+        game = services.create_game(self.guild, 777, self.host, invoking_id=100)
         self.assertEqual(game.channel_id, 777)
 
     def test_the_invoking_channel_answers_when_nothing_else_is_known(self):
-        game = services.start_game(self.guild, None, self.host, invoking_id=100)
+        game = services.create_game(self.guild, None, self.host, invoking_id=100)
         self.assertEqual(game.channel_id, 100)
 
     def test_a_game_needs_a_channel_guild_default_or_invoking_channel(self):
         with self.assertRaises(ValueError):
-            services.start_game(self.guild, None, self.host)
+            services.create_game(self.guild, None, self.host)
 
 
 class DefaultChannelTests(GameTestCase):
-    def test_a_guild_starts_without_a_default_channel(self):
+    def test_a_guild_has_no_default_channel(self):
         self.assertIsNone(services.default_channel_of(self.guild))
 
     def test_an_administrator_sets_the_default_channel(self):
@@ -210,7 +235,7 @@ class DefaultChannelTests(GameTestCase):
         services.set_default_channel(self.guild, 555, self.admin)
         services.clear_default_channel(self.guild, self.admin)
         self.assertIsNone(services.default_channel_of(self.guild))
-        game = services.start_game(self.guild, 100, self.host)
+        game = services.create_game(self.guild, 100, self.host)
         self.assertEqual(game.channel_id, 100)
 
     def test_the_default_is_read_from_the_database_after_a_cached_read(self):
@@ -228,13 +253,14 @@ class DefaultChannelTests(GameTestCase):
 class RoundTests(GameTestCase):
     def setUp(self):
         super().setUp()
-        self.game = self.start_game()
-        self.round = services.start_round(self.game, self.host, self.question)
+        self.game = self.create_game()
+        self.round = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
 
     def test_rounds_are_numbered_in_order(self):
         self.assertEqual(self.round.index, 1)
         services.reveal_round(self.round, self.host)
-        self.assertEqual(services.start_round(self.game, self.host).index, 2)
+        self.assertEqual(services.start_round(self.game, self.host)['index'], 2)
 
     def test_only_hosts_open_or_reveal_rounds(self):
         with self.assertRaises(PermissionError):
@@ -248,13 +274,15 @@ class RoundTests(GameTestCase):
 
     def test_a_played_question_is_not_drawn_again(self):
         services.reveal_round(self.round, self.host)
-        self.assertEqual(services.start_round(self.game, self.host).question,
-                         self.other_question)
+        started = Round.objects.get(
+            pk=services.start_round(self.game, self.host)['round_id'])
+        self.assertEqual(started.question, self.other_question)
 
     def test_running_out_of_questions_is_refused(self):
         services.reveal_round(self.round, self.host)
-        services.reveal_round(services.start_round(self.game, self.host),
-                              self.host)
+        second = Round.objects.get(
+            pk=services.start_round(self.game, self.host)['round_id'])
+        services.reveal_round(second, self.host)
         with self.assertRaises(ValueError):
             services.start_round(self.game, self.host)
 
@@ -263,45 +291,52 @@ class RoundTests(GameTestCase):
         with self.assertRaises(ValueError):
             services.reveal_round(self.round, self.host)
 
-    def test_reveal_result_carries_the_answer_label_and_scores(self):
+    def test_the_reveal_carries_the_answer_label_and_scores(self):
         services.submit_guess(self.round, self.player_row, 'Song', 'Band')
-        result = services.reveal_round_result(self.round, self.host)
+        result = services.reveal_round(self.round, self.host)
         self.assertEqual(result['index'], 1)
         self.assertEqual(result['question_text'], 'Song (Band)')
         self.assertEqual([row['points'] for row in result['scores']], [2])
 
-    def test_reveal_result_refuses_a_second_reveal(self):
-        services.reveal_round_result(self.round, self.host)
+    def test_the_reveal_refuses_a_second_reveal(self):
+        services.reveal_round(self.round, self.host)
         with self.assertRaises(ValueError):
-            services.reveal_round_result(self.round, self.host)
+            services.reveal_round(self.round, self.host)
 
     def test_the_current_round_is_the_started_one(self):
         services.reveal_round(self.round, self.host)
-        started = services.start_round(self.game, self.host)
+        started = Round.objects.get(
+            pk=services.start_round(self.game, self.host)['round_id'])
         self.assertEqual(services.current_round(self.game).pk, started.pk)
 
     def test_a_queued_round_is_not_started_on_creation(self):
-        queued = services.create_round(self.game, self.host, self.other_question)
+        queued = Round.objects.get(
+            pk=services.create_round(self.game, self.host, self.other_question)['round_id'])
         self.assertFalse(queued.is_started)
         self.assertEqual(services.current_round(self.game).pk, self.round.pk)
 
     def test_a_queued_round_is_started_instead_of_drawing(self):
         services.create_round(self.game, self.host, self.other_question)
         services.reveal_round(self.round, self.host)
-        started = services.start_round(self.game, self.host)
+        started = Round.objects.get(
+            pk=services.start_round(self.game, self.host)['round_id'])
         self.assertEqual(started.question, self.other_question)
         self.assertTrue(started.is_started)
 
     def test_queued_rounds_start_in_their_order(self):
         third_question = Question.objects.create(
             expected_answer=Answer.objects.create(text='Third'))
-        second = services.create_round(self.game, self.host, self.other_question)
-        third = services.create_round(self.game, self.host, third_question)
+        second = Round.objects.get(
+            pk=services.create_round(self.game, self.host, self.other_question)['round_id'])
+        third = Round.objects.get(
+            pk=services.create_round(self.game, self.host, third_question)['round_id'])
         services.reveal_round(self.round, self.host)
-        started = services.start_round(self.game, self.host)
+        started = Round.objects.get(
+            pk=services.start_round(self.game, self.host)['round_id'])
         self.assertEqual((started.pk, started.index), (second.pk, 2))
         services.reveal_round(started, self.host)
-        started = services.start_round(self.game, self.host)
+        started = Round.objects.get(
+            pk=services.start_round(self.game, self.host)['round_id'])
         self.assertEqual((started.pk, started.index), (third.pk, 3))
 
     def test_only_hosts_queue_rounds(self):
@@ -317,8 +352,9 @@ class RoundTests(GameTestCase):
 class GuessTests(GameTestCase):
     def setUp(self):
         super().setUp()
-        self.game = self.start_game()
-        self.round = services.start_round(self.game, self.host, self.question)
+        self.game = self.create_game()
+        self.round = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
 
     def test_a_right_guess_matches_the_title_and_the_artist(self):
         guess = services.submit_guess(self.round, self.player_row, 'Song', 'Band')
@@ -374,21 +410,24 @@ class GuessTests(GameTestCase):
             services.submit_guess(self.round, self.player_row, 'Song', 'Band')
 
     def test_guessing_an_unstarted_round_is_refused(self):
-        queued = services.create_round(self.game, self.host, self.other_question)
+        queued = Round.objects.get(
+            pk=services.create_round(self.game, self.host, self.other_question)['round_id'])
         with self.assertRaises(ValueError):
             services.submit_guess(queued, self.player_row, 'Other', '')
 
 class ScoringTests(GameTestCase):
     def setUp(self):
         super().setUp()
-        self.game = self.start_game()
-        self.round = services.start_round(self.game, self.host, self.question)
+        self.game = self.create_game()
+        self.round = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
         self.second = Player.objects.from_discord(FakeMember(44))
 
     def set_game_scoring_mode(self, mode: str) -> None:
         """Apply a scoring mode to the running game."""
         self.game.scoring_mode = mode
         self.game.save(update_fields=['scoring_mode'])
+        self.round.refresh_from_db()
 
     def test_standard_mode_scores_every_correct_answer(self):
         services.submit_guess(self.round, self.player_row, 'Song', 'Band')
@@ -422,7 +461,7 @@ class ScoringTests(GameTestCase):
         self.assertEqual([score['points'] for score in scores], [2, 2])
 
     def test_a_round_inherits_the_game_scoring_mode(self):
-        self.game.scoring_mode = ScoringMode.FIRST_ONLY
+        self.set_game_scoring_mode(ScoringMode.FIRST_ONLY)
         self.assertEqual(self.round.effective_scoring_mode, ScoringMode.FIRST_ONLY)
         self.round.scoring_mode = ScoringMode.SPEED
         self.assertEqual(self.round.effective_scoring_mode, ScoringMode.SPEED)
@@ -437,8 +476,9 @@ class ScoringTests(GameTestCase):
 class TeamTests(GameTestCase):
     def setUp(self):
         super().setUp()
-        self.game = self.start_game()
-        self.round = services.start_round(self.game, self.host, self.question)
+        self.game = self.create_game()
+        self.round = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
         self.teammate = Player.objects.from_discord(FakeMember(44))
 
     def test_add_team_creates_it_with_its_players(self):
@@ -546,8 +586,9 @@ class LibraryTests(GameTestCase):
     def setUp(self):
         super().setUp()
         self.other_question.delete()
-        self.game = self.start_game()
-        self.round = services.start_round(self.game, self.host, self.question)
+        self.game = self.create_game()
+        self.round = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
 
     def test_add_answer_creates_it_for_the_guild(self):
         answer = services.add_answer(self.guild, self.host, ' Wonderwall ')
@@ -568,9 +609,10 @@ class LibraryTests(GameTestCase):
             services.add_answer(self.guild, self.host, '   ')
 
     def test_add_question_creates_it_for_the_guild(self):
-        question = services.add_question(
-            self.guild, self.host, 'Song', prompt='Guess it',
-            secondary_text='Band', year=1999, album='Album')
+        question = Question.objects.get(
+            pk=services.add_question(
+                                     self.guild, self.host, 'Song', prompt='Guess it',
+                                     secondary_text='Band', year=1999, album='Album')['pk'])
         self.assertEqual(question.guild, self.guild)
         self.assertEqual(question.expected_answer.text, 'Song')
         self.assertEqual(question.expected_answer.guild, self.guild)
@@ -579,8 +621,9 @@ class LibraryTests(GameTestCase):
         self.assertEqual(question.year, 1999)
 
     def test_the_media_link_of_a_question_is_kept(self):
-        question = services.add_question(self.guild, self.host, 'Wonderwall',
-                                         media_url='https://youtu.be/1')
+        question = Question.objects.get(
+            pk=services.add_question(self.guild, self.host, 'Wonderwall',
+                                     media_url='https://youtu.be/1')['pk'])
         self.assertEqual(question.media_url, 'https://youtu.be/1')
 
     def test_a_media_link_must_be_a_full_url(self):
@@ -608,9 +651,10 @@ class LibraryTests(GameTestCase):
             services.add_question(self.guild, self.host, '   ')
 
     def test_a_question_can_be_created_with_choices(self):
-        question = services.add_question(
-            self.guild, self.host, 'Right', prompt='Pick one',
-            choices=['Right', 'Wrong'])
+        question = Question.objects.get(
+            pk=services.add_question(
+                                     self.guild, self.host, 'Right', prompt='Pick one',
+                                     choices=['Right', 'Wrong'])['pk'])
         self.assertEqual([choice.text for choice in question.choices.all()],
                          ['Right', 'Wrong'])
 
@@ -632,8 +676,8 @@ class LibraryTests(GameTestCase):
         self.assertFalse(Question.objects.filter(prompt='').filter(
             expected_answer__text='Right').exists())
 
-    def test_add_question_result_returns_a_plain_label(self):
-        result = services.add_question_result(
+    def test_add_question_returns_a_plain_label(self):
+        result = services.add_question(
             self.guild, self.host, 'Song', secondary_text='Band')
         self.assertIsInstance(result['pk'], int)
         self.assertEqual(result['label'], 'Song (Band)')
@@ -707,15 +751,16 @@ class QuestionEditTests(GameTestCase):
 
     def setUp(self):
         super().setUp()
-        self.own = services.add_question(
-            self.guild, self.host, 'Song', prompt='Guess it',
-            secondary_text='Band', year=1999, album='Album',
-            media_url='https://youtu.be/1')
+        self.own = Question.objects.get(
+            pk=services.add_question(
+                self.guild, self.host, 'Song', prompt='Guess it',
+                secondary_text='Band', year=1999, album='Album',
+                media_url='https://youtu.be/1')['pk'])
 
     def edit(self, field, value, question=None):
         """Change one field of a question and return it reloaded."""
         question = question or self.own
-        services.edit_question(self.guild, self.host, question,
+        services.edit_question(self.guild, self.host, question.pk,
                                **{field: value})
         question.refresh_from_db()
         return question
@@ -754,13 +799,13 @@ class QuestionEditTests(GameTestCase):
 
     def test_only_hosts_change_a_question(self):
         with self.assertRaises(PermissionError):
-            services.edit_question(self.guild, self.player, self.own,
+            services.edit_question(self.guild, self.player, self.own.pk,
                                    album='Album')
         with self.assertRaises(PermissionError):
             services.editable_question(self.guild, self.player, self.own.pk)
 
     def test_several_fields_change_in_one_call(self):
-        services.edit_question(self.guild, self.host, self.own,
+        services.edit_question(self.guild, self.host, self.own.pk,
                                prompt='Guess the title', year='2001',
                                album='Other album', media='-')
         self.own.refresh_from_db()
@@ -780,17 +825,19 @@ class QuestionEditTests(GameTestCase):
         for values in ({}, {'prompt': ' '}):
             with self.subTest(values=values):
                 with self.assertRaises(ValueError):
-                    services.edit_question(self.guild, self.host, self.own,
+                    services.edit_question(self.guild, self.host, self.own.pk,
                                            **values)
         self.own.refresh_from_db()
         self.assertEqual(self.own.prompt, 'Guess it')
 
     def test_the_answers_and_the_choices_change_together(self):
-        question = services.add_question(self.guild, self.host, 'Right',
-                                         prompt='Pick one',
-                                         choices=['Right', 'Wrong'])
-        services.edit_question(self.guild, self.host, question,
+        question = Question.objects.get(
+            pk=services.add_question(self.guild, self.host, 'Right',
+                                     prompt='Pick one',
+                                     choices=['Right', 'Wrong'])['pk'])
+        services.edit_question(self.guild, self.host, question.pk,
                                answer='Righter', choices='Righter, Wrong')
+        question.refresh_from_db()
         self.assertEqual(question.expected_answer.text, 'Righter')
         self.assertEqual(sorted(choice.text
                                 for choice in question.choices.all()),
@@ -825,13 +872,14 @@ class QuestionEditTests(GameTestCase):
         self.assertEqual(self.own.answer_text, 'Wonderwall (Band)')
 
     def test_renaming_an_answer_reuses_the_row_of_the_server(self):
-        shared = services.add_question(self.guild, self.host,
-                                       'Wonderwall').expected_answer
+        other = Question.objects.get(
+            pk=services.add_question(self.guild, self.host, 'Wonderwall')['pk'])
         self.edit('answer', 'wonderwall')
-        self.assertEqual(self.own.expected_answer, shared)
+        self.assertEqual(self.own.expected_answer, other.expected_answer)
 
     def test_renaming_an_answer_leaves_the_questions_using_it_alone(self):
-        other = services.add_question(self.guild, self.host, 'Wonderwall')
+        other = Question.objects.get(
+            pk=services.add_question(self.guild, self.host, 'Wonderwall')['pk'])
         previous = self.own.expected_answer
         self.edit('answer', 'Wonderwall', question=other)
         other.refresh_from_db()
@@ -844,18 +892,20 @@ class QuestionEditTests(GameTestCase):
         self.assertEqual(self.own.expected_answer.text, 'Song')
 
     def test_renaming_the_answer_of_a_choice_question_swaps_its_option(self):
-        question = services.add_question(self.guild, self.host, 'Right',
-                                         prompt='Pick one',
-                                         choices=['Right', 'Wrong'])
+        question = Question.objects.get(
+            pk=services.add_question(self.guild, self.host, 'Right',
+                                     prompt='Pick one',
+                                     choices=['Right', 'Wrong'])['pk'])
         self.edit('answer', 'Righter', question=question)
         self.assertEqual(sorted(choice.text
                                 for choice in question.choices.all()),
                          ['Righter', 'Wrong'])
 
     def test_the_choices_are_replaced_and_dropped(self):
-        question = services.add_question(self.guild, self.host, 'Right',
-                                         prompt='Pick one',
-                                         choices=['Right', 'Wrong'])
+        question = Question.objects.get(
+            pk=services.add_question(self.guild, self.host, 'Right',
+                                     prompt='Pick one',
+                                     choices=['Right', 'Wrong'])['pk'])
         self.edit('choices', 'Right, Other', question=question)
         self.assertEqual(sorted(choice.text
                                 for choice in question.choices.all()),
@@ -864,9 +914,10 @@ class QuestionEditTests(GameTestCase):
         self.assertEqual(question.choices.count(), 0)
 
     def test_the_choices_must_offer_the_expected_answer(self):
-        question = services.add_question(self.guild, self.host, 'Right',
-                                         prompt='Pick one',
-                                         choices=['Right', 'Wrong'])
+        question = Question.objects.get(
+            pk=services.add_question(self.guild, self.host, 'Right',
+                                     prompt='Pick one',
+                                     choices=['Right', 'Wrong'])['pk'])
         with self.assertRaises(ValueError):
             self.edit('choices', 'Wrong, Other', question=question)
         self.assertEqual(sorted(choice.text
@@ -874,32 +925,32 @@ class QuestionEditTests(GameTestCase):
                          ['Right', 'Wrong'])
 
     def test_a_queued_round_refuses_an_edit_it_cannot_play(self):
-        game = self.start_game()
+        game = self.create_game()
         services.create_round(game, self.host, self.own, QuizType.OPEN)
         with self.assertRaises(ValueError):
-            services.edit_question(self.guild, self.host, self.own,
+            services.edit_question(self.guild, self.host, self.own.pk,
                                    prompt='-')
         self.own.refresh_from_db()
         self.assertEqual(self.own.prompt, 'Guess it')
 
     def test_a_batch_a_queued_round_refuses_leaves_every_field_alone(self):
-        game = self.start_game()
+        game = self.create_game()
         services.create_round(game, self.host, self.own, QuizType.OPEN)
         with self.assertRaises(ValueError):
-            services.edit_question(self.guild, self.host, self.own,
+            services.edit_question(self.guild, self.host, self.own.pk,
                                    album='Other album', prompt='-')
         self.own.refresh_from_db()
         self.assertEqual(self.own.prompt, 'Guess it')
         self.assertEqual(self.own.album, 'Album')
 
     def test_a_queued_blind_test_round_leaves_a_prompt_optional(self):
-        game = self.start_game()
+        game = self.create_game()
         services.create_round(game, self.host, self.own)
         self.edit('prompt', '-')
         self.assertEqual(self.own.prompt, '')
 
-    def test_edit_question_result_returns_a_plain_label(self):
-        result = services.edit_question_result(
+    def test_edit_question_returns_a_plain_label(self):
+        result = services.edit_question(
             self.guild, self.host, str(self.own.pk), prompt='Guess the title')
         self.assertEqual(result['pk'], self.own.pk)
         self.assertEqual(result['fields'], ['prompt'])
@@ -908,8 +959,8 @@ class QuestionEditTests(GameTestCase):
         self.assertEqual(result['media_url'], 'https://youtu.be/1')
         self.assertEqual(result['choices'], 0)
 
-    def test_edit_question_result_lists_the_fields_it_changed(self):
-        result = services.edit_question_result(
+    def test_edit_question_lists_the_fields_it_changed(self):
+        result = services.edit_question(
             self.guild, self.host, str(self.own.pk), year='-', album='Other')
         self.assertEqual(result['fields'], ['year', 'album'])
         self.own.refresh_from_db()
@@ -944,7 +995,7 @@ class QuizTypeTests(GameTestCase):
 
     def setUp(self):
         super().setUp()
-        self.game = self.start_game()
+        self.game = self.create_game()
 
     def _prompted_question(self) -> Question:
         """Return a question an open round can play."""
@@ -962,24 +1013,26 @@ class QuizTypeTests(GameTestCase):
 
     def test_the_display_name_defaults_to_the_game_type(self):
         self.assertEqual(self.game.display_name, f'Blind test #{self.game.pk}')
-        auto = services.start_game(self.other_guild, 100, self.admin,
+        auto = services.create_game(self.other_guild, 100, self.admin,
                                    quiz_type=QuizType.MULTIPLE_CHOICE)
         self.assertEqual(auto.display_name, f'Multiple choice #{auto.pk}')
 
     def test_a_named_game_keeps_its_name(self):
-        game = services.start_game(self.other_guild, 100, self.admin,
+        game = services.create_game(self.other_guild, 100, self.admin,
                                    name='  Fiesta  ')
         self.assertEqual(game.display_name, 'Fiesta')
 
     def test_a_round_inherits_the_game_type(self):
-        round_ = services.start_round(self.game, self.host, self.question)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
         self.assertEqual(round_.type, '')
         self.assertEqual(round_.effective_type, QuizType.BLIND_TEST)
 
     def test_a_round_can_override_the_game_type(self):
-        round_ = services.start_round(self.game, self.host,
-                                      self._choice_question(),
-                                      QuizType.MULTIPLE_CHOICE)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host,
+                                    self._choice_question(),
+                                    QuizType.MULTIPLE_CHOICE)['round_id'])
         self.assertEqual(round_.type, QuizType.MULTIPLE_CHOICE)
         self.assertEqual(round_.effective_type, QuizType.MULTIPLE_CHOICE)
 
@@ -1005,92 +1058,100 @@ class QuizTypeTests(GameTestCase):
                                   QuizType.MULTIPLE_CHOICE)
 
     def test_a_blind_test_round_plays_a_question_without_a_prompt(self):
-        round_ = services.start_round(self.game, self.host, self.question)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
         self.assertEqual(services.round_display(round_)['prompt'],
                          DEFAULT_BLIND_TEST_PROMPT)
 
     def test_an_open_round_shows_the_prompt_of_its_question(self):
-        round_ = services.start_round(self.game, self.host,
-                                      self._prompted_question(), QuizType.OPEN)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host,
+                                    self._prompted_question(), QuizType.OPEN)['round_id'])
         self.assertEqual(services.round_display(round_)['prompt'], 'Which album?')
 
     def test_a_draw_skips_questions_the_round_type_cannot_play(self):
         with self.assertRaises(ValueError):
             services.start_round(self.game, self.host, quiz_type=QuizType.OPEN)
         prompted = self._prompted_question()
-        started = services.start_round(self.game, self.host,
-                                       quiz_type=QuizType.OPEN)
+        started = Round.objects.get(
+            pk=services.start_round(self.game, self.host,
+                                    quiz_type=QuizType.OPEN)['round_id'])
         self.assertEqual(started.question, prompted)
 
     def test_a_draw_finds_a_multiple_choice_question_with_choices(self):
         question = self._choice_question()
-        started = services.start_round(self.game, self.host,
-                                       quiz_type=QuizType.MULTIPLE_CHOICE)
+        started = Round.objects.get(
+            pk=services.start_round(self.game, self.host,
+                                    quiz_type=QuizType.MULTIPLE_CHOICE)['round_id'])
         self.assertEqual(started.question, question)
 
     def test_the_form_of_a_text_round_offers_no_option(self):
-        round_ = services.start_round(self.game, self.host, self.question)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
         self.assertEqual(services.guess_form(round_)['options'], [])
 
     def test_the_form_of_a_multiple_choice_round_offers_its_choices(self):
-        round_ = services.create_round(self.game, self.host,
-                                       self._choice_question(),
-                                       QuizType.MULTIPLE_CHOICE)
+        round_ = Round.objects.get(
+            pk=services.create_round(self.game, self.host,
+                                     self._choice_question(),
+                                     QuizType.MULTIPLE_CHOICE)['round_id'])
         form = services.guess_form(round_)
         self.assertEqual(form['type'], QuizType.MULTIPLE_CHOICE)
         self.assertEqual([option['label'] for option in form['options']],
                          ['Right', 'Wrong'])
 
-    def test_the_round_result_counts_the_queued_questions(self):
+    def test_the_round_counts_the_queued_questions(self):
         services.create_round(self.game, self.host, self.other_question)
         later = Question.objects.create(
             expected_answer=Answer.objects.create(text='Later'))
         services.create_round(self.game, self.host, later)
-        result = services.start_round_result(self.game, self.host, self.question)
+        result = services.start_round(self.game, self.host, self.question)
         self.assertEqual(result['queued'], 1)
         self.assertEqual(result['game_name'], self.game.display_name)
         self.assertEqual(result['type_label'], 'Blind test')
 
-    def test_the_round_results_carry_the_media_link(self):
+    def test_the_rounds_carry_the_media_link(self):
         self.other_question.media_url = 'https://youtu.be/1'
         self.other_question.save(update_fields=['media_url'])
-        queued = services.queue_round_result(self.game, self.host,
-                                             self.other_question)
-        started = services.start_round_result(self.game, self.host,
-                                              self.question)
+        queued = services.create_round(self.game, self.host, self.other_question)
+        started = services.start_round(self.game, self.host, self.question)
         self.assertEqual(queued['media_url'], 'https://youtu.be/1')
         self.assertEqual(started['media_url'], '')
 
     def test_the_reveal_counts_the_answers_and_the_right_ones(self):
-        round_ = services.start_round(self.game, self.host, self.question)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
         services.submit_guess(round_, self.player_row, 'Song', 'Band')
-        result = services.reveal_round_result(round_, self.host)
+        result = services.reveal_round(round_, self.host)
         self.assertEqual(result['answer_text'], 'Song (Band)')
         self.assertEqual((result['answered'], result['right']), (1, 1))
         self.assertEqual(result['right_names'], ['user43'])
 
     def test_the_recap_summarises_the_game(self):
-        round_ = services.start_round(self.game, self.host, self.question)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
         services.submit_guess(round_, self.player_row, 'Song', 'Band')
         services.reveal_round(round_, self.host)
-        recap = services.recap_result(self.game, self.host)
+        recap = services.finish_game(self.game, self.host)
         self.assertEqual(recap['rounds'], 1)
         self.assertEqual(recap['answers'], 1)
         self.assertEqual(recap['game_name'], self.game.display_name)
         self.assertEqual([row['points'] for row in recap['scores']], [2])
 
     def test_a_queued_question_is_not_a_round_played(self):
-        round_ = services.start_round(self.game, self.host, self.question)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
         services.submit_guess(round_, self.player_row, 'Song', 'Band')
         services.reveal_round(round_, self.host)
         services.create_round(self.game, self.host, self.other_question)
-        recap = services.recap_result(self.game, self.host)
+        recap = services.finish_game(self.game, self.host)
         self.assertEqual(recap['rounds'], 1)
         self.assertEqual(recap['answers'], 1)
         self.assertEqual([row['points'] for row in recap['scores']], [2])
 
     def test_a_round_edited_in_the_admin_is_validated(self):
-        round_ = services.start_round(self.game, self.host, self.question)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host, self.question)['round_id'])
         round_.type = QuizType.MULTIPLE_CHOICE
         with self.assertRaises(ValidationError):
             round_.full_clean()
@@ -1111,8 +1172,9 @@ class QuizTypeTests(GameTestCase):
         self.assertNotIn('Song', str(self.question))
 
     def test_the_host_text_of_a_round_carries_the_answer(self):
-        round_ = services.start_round(self.game, self.host,
-                                      self._prompted_question(), QuizType.OPEN)
+        round_ = Round.objects.get(
+            pk=services.start_round(self.game, self.host,
+                                    self._prompted_question(), QuizType.OPEN)['round_id'])
         display = services.round_display(round_)
         self.assertEqual(display['question_text'], 'Which album?')
         self.assertEqual(display['host_text'], 'Which album? — answer: Album')
@@ -1121,14 +1183,17 @@ class QuizTypeTests(GameTestCase):
 class SetupStateTests(GameTestCase):
     """A game is prepared in SETUP, then published to run."""
 
-    def prepare(self, **kwargs) -> dict:
-        return services.prepare_result(self.guild, 100, self.host, **kwargs)
+    def setup(self, **kwargs) -> dict:
+        """Create a game awaiting publication and return its panel data."""
+        game = services.create_game(self.guild, 100, self.host,
+                                    state=Game.State.SETUP, **kwargs)
+        return services.panel_data(game)
 
-    def prepared_game(self, **kwargs) -> Game:
-        return Game.objects.get(pk=self.prepare(**kwargs)['game_id'])
+    def game_in_setup(self, **kwargs) -> Game:
+        return Game.objects.get(pk=self.setup(**kwargs)['game_id'])
 
-    def test_prepare_opens_a_game_that_is_not_running_yet(self):
-        data = self.prepare(name='Fiesta')
+    def test_setup_opens_a_game_that_is_not_running_yet(self):
+        data = self.setup(name='Fiesta')
         game = Game.objects.get(pk=data['game_id'])
         self.assertEqual(game.state, Game.State.SETUP)
         self.assertTrue(game.is_preparing)
@@ -1137,19 +1202,19 @@ class SetupStateTests(GameTestCase):
         self.assertEqual({choice['pk'] for choice in data['choices']},
                          {self.question.pk, self.other_question.pk})
 
-    def test_a_second_game_cannot_be_prepared(self):
-        self.prepare()
+    def test_a_second_game_cannot_be_set_up(self):
+        self.setup()
         with self.assertRaises(ValueError):
-            self.prepare()
+            self.setup()
 
     def test_a_round_cannot_be_opened_before_publishing(self):
-        game = self.prepared_game()
+        game = self.game_in_setup()
         with self.assertRaises(ValueError):
             services.start_round(game, self.host, self.question)
 
     def test_publishing_starts_the_game(self):
-        game = self.prepared_game(name='Fiesta')
-        announced = services.publish_game_result(game, self.host)
+        game = self.game_in_setup(name='Fiesta')
+        announced = services.publish_game(game, self.host)
         game.refresh_from_db()
         self.assertTrue(game.is_running)
         self.assertEqual(announced['game_name'], 'Fiesta')
@@ -1157,18 +1222,18 @@ class SetupStateTests(GameTestCase):
         self.assertEqual(announced['type_label'], 'Blind test')
 
     def test_publishing_twice_is_refused(self):
-        game = self.prepared_game()
+        game = self.game_in_setup()
         services.publish_game(game, self.host)
         with self.assertRaises(ValueError):
             services.publish_game(game, self.host)
 
     def test_only_hosts_publish(self):
-        game = self.prepared_game()
+        game = self.game_in_setup()
         with self.assertRaises(PermissionError):
             services.publish_game(game, self.player)
 
     def test_closing_an_unpublished_game_finishes_it(self):
-        game = self.prepared_game()
+        game = self.game_in_setup()
         services.finish_game(game, self.host)
         game.refresh_from_db()
         self.assertEqual(game.state, Game.State.FINISHED)
@@ -1179,42 +1244,42 @@ class QueueTests(GameTestCase):
     """The setup panel queues, drops and copies questions."""
 
     def test_queueing_questions_counts_what_was_added(self):
-        game = self.start_game()
+        game = self.create_game()
         result = services.queue_questions(
             game, self.host, [self.question.pk, self.other_question.pk])
         self.assertEqual((result['added'], result['skipped']), (2, 0))
         self.assertEqual(result['queued'], 2)
 
     def test_only_hosts_queue_questions(self):
-        game = self.start_game()
+        game = self.create_game()
         with self.assertRaises(PermissionError):
             services.queue_questions(game, self.player, [self.question.pk])
 
     def test_clearing_the_queue_drops_every_queued_question(self):
-        game = self.start_game()
+        game = self.create_game()
         services.queue_questions(game, self.host, [self.question.pk])
         self.assertEqual(services.clear_queue(game, self.host), 1)
         self.assertEqual(services.queued_count(game), 0)
 
     def test_copying_a_game_queues_its_questions(self):
-        source = self.start_game()
+        source = self.create_game()
         services.start_round(source, self.host, self.question)
         services.finish_game(source, self.host)
-        game = self.start_game()
+        game = self.create_game()
         result = services.copy_questions_by_pk(game, self.host, source.pk)
         self.assertEqual((result['added'], result['skipped']), (1, 0))
         self.assertEqual(result['queued'], 1)
 
     def test_copying_the_game_itself_is_refused(self):
-        game = self.start_game()
+        game = self.create_game()
         with self.assertRaises(ValueError):
             services.copy_questions_by_pk(game, self.host, game.pk)
 
     def test_copying_a_game_of_another_server_is_refused(self):
-        foreign = services.start_game(self.other_guild, 100, self.admin)
+        foreign = services.create_game(self.other_guild, 100, self.admin)
         services.start_round(foreign, self.admin, self.question)
         services.finish_game(foreign, self.admin)
-        game = self.start_game()
+        game = self.create_game()
         with self.assertRaises(ValueError):
             services.copy_questions_by_pk(game, self.host, foreign.pk)
 
@@ -1299,18 +1364,18 @@ class CacheTests(GameTestCase):
             self.assertEqual(Player.objects.from_discord(member).pk, player.pk)
 
     def test_the_question_options_are_read_once(self):
-        game = self.start_game()
+        game = self.create_game()
         services.question_choices(game)
         with self.assertNumQueries(0):
             self.assertTrue(services.question_choices(game))
 
     def test_the_question_options_search_the_labels(self):
-        game = self.start_game()
+        game = self.create_game()
         found = services.question_choices(game, 'other')
         self.assertEqual([choice['label'] for choice in found], ['Other'])
 
     def test_a_new_question_is_offered_at_once(self):
-        game = self.start_game()
+        game = self.create_game()
         services.question_choices(game)
         with self.captureOnCommitCallbacks(execute=True):
             services.add_question(self.guild, self.host, 'Fresh Song')
@@ -1318,16 +1383,18 @@ class CacheTests(GameTestCase):
         self.assertTrue(any('Fresh Song' in label for label in labels))
 
     def test_an_edited_answer_is_seen_at_once(self):
-        game = self.start_game()
+        game = self.create_game()
+        own = Question.objects.get(
+            pk=services.add_question(self.guild, self.host, 'Song')['pk'])
         services.question_choices(game)
         with self.captureOnCommitCallbacks(execute=True):
-            services.edit_question(self.guild, self.host, self.question,
+            services.edit_question(self.guild, self.host, own.pk,
                                    answer='Renamed')
         labels = [choice['label'] for choice in services.question_choices(game)]
         self.assertTrue(any('Renamed' in label for label in labels))
 
     def test_a_played_question_leaves_the_picker(self):
-        game = self.start_game()
+        game = self.create_game()
         played = services.question_choices(game)[0]['pk']
         with self.captureOnCommitCallbacks(execute=True):
             services.start_round(game, self.host,
@@ -1341,20 +1408,20 @@ class CacheTests(GameTestCase):
             self.assertEqual(services.library_choices(self.guild), [])
 
     def test_the_queued_options_are_read_once(self):
-        game = self.start_game()
+        game = self.create_game()
         services.create_round(game, self.host, self.question, index=1)
         services.queued_choices(game)
         with self.assertNumQueries(0):
             self.assertEqual(len(services.queued_choices(game)), 1)
 
     def test_the_game_options_are_read_once(self):
-        self.start_game()
+        self.create_game()
         services.game_choices(self.guild)
         with self.assertNumQueries(0):
             self.assertEqual(len(services.game_choices(self.guild)), 1)
 
     def test_a_library_too_large_to_cache_falls_back_to_the_database(self):
-        game = self.start_game()
+        game = self.create_game()
         with mock.patch.object(caching, 'LIBRARY_CACHE_LIMIT', 1):
             pks = [choice['pk'] for choice in services.question_choices(game)]
         self.assertIn(self.question.pk, pks)
@@ -1366,9 +1433,10 @@ class ScoreboardQueryTests(GameTestCase):
 
     def _play(self, rounds: int) -> Game:
         """Return a game with as many played, answered and revealed rounds."""
-        game = self.start_game()
+        game = self.create_game()
         for _count in range(rounds):
-            round_ = services.start_round(game, self.host, self.question)
+            round_ = Round.objects.get(
+                pk=services.start_round(game, self.host, self.question)['round_id'])
             services.submit_guess(round_, self.player_row, 'Song')
             services.reveal_round(round_, self.host)
         return game
@@ -1386,6 +1454,6 @@ class ScoreboardQueryTests(GameTestCase):
         def queries(rounds: int) -> int:
             game = self._play(rounds)
             with CaptureQueriesContext(connection) as captured:
-                services.recap_result(game, self.host)
+                services.finish_game(game, self.host)
             return len(captured)
         self.assertEqual(queries(1), queries(3))

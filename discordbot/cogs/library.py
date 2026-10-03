@@ -150,7 +150,7 @@ class LibraryCog(commands.Cog):
             expected, expected_variants = services.split_answers(answer)
             secondary, secondary_variants = services.split_answers(artist)
             result = await run_db(
-                services.add_question_result, guild, interaction.user, expected,
+                services.add_question, guild, interaction.user, expected,
                 prompt=prompt, secondary_text=secondary, year=year, album=album,
                 media_url=media, choices=choices.split(','),
                 expected_variants=expected_variants,
@@ -195,7 +195,7 @@ class LibraryCog(commands.Cog):
             return
         try:
             guild = await guild_for(interaction)
-            result = await run_db(services.edit_question_result, guild,
+            result = await run_db(services.edit_question, guild,
                                   interaction.user, question, answer=answer,
                                   artist=artist, prompt=prompt,
                                   choices=choices, year=year, album=album,

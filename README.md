@@ -49,7 +49,7 @@ python manage.py test         # test suite
 | Command | Description |
 | --- | --- |
 | `/ping` | Gateway latency and number of games in the database |
-| `/blindtest start` | Prepare a game: optional `channel` where to play the game, plus name, quiz type and scoring mode (hosts only) |
+| `/blindtest setup` | Set up a game: optional `channel` where to play the game, plus name, quiz type and scoring mode (hosts only) |
 | `/blindtest publish` | Publish the game being prepared and announce it in its channel (hosts only) |
 | `/blindtest panel` | Reopen the private controls of the running game (hosts only) |
 | `/blindtest guess` | Submit your answer for the round in play (players) |
@@ -59,7 +59,7 @@ python manage.py test         # test suite
 | `/blindtest copy` | Queue the questions another game was played with (hosts only) |
 | `/blindtest next` | Open the next round: the queued question or a drawn one (hosts only) |
 | `/blindtest reveal` | Reveal the current round and publish the standings (hosts only) |
-| `/blindtest end` | End the game of this server. A game still being prepared closes without a recap (hosts only) |
+| `/blindtest end` | End the game of this server, revealing the round left open before the final scores. A game still being prepared closes without a recap (hosts only) |
 | `/admin host add` | Allow a user or a role to host (server administrators) |
 | `/admin host remove` | Withdraw host rights (server administrators) |
 | `/admin host list` | Show the hosts of this server (server administrators) |
@@ -82,17 +82,17 @@ python manage.py test         # test suite
 
 - Where a game is played is per server too:
   - `/admin channel set` records the default channel of the server.
-  - `/blindtest start channel=...` plays that game in the named channel or thread.
+  - `/blindtest setup channel=...` plays that game in the named channel or thread.
   - The current channel is the fallback in case none of these are set.
 
-- `/blindtest start` prepares a game without announcing it.
+- `/blindtest setup` sets up a game without announcing it.
   - The host receives a private setup panel to add, drop or copy questions.
   - The panel runs the same operations as `/blindtest queue`, `/blindtest unqueue`, `/blindtest clear` and `/blindtest copy`.
   - `/blindtest publish` announces the game in its channel and swaps the setup panel for the host panel.
   - No round can open before the game is published.
   - A game ended while it is still being prepared closes without a public recap.
 
-- Hosts drive a published game from the private panel sent by `/blindtest start` or `/blindtest panel`: next round, reveal, queue, end.
+- Hosts drive a published game from the private panel sent by `/blindtest setup` or `/blindtest panel`: next round, reveal, queue, end.
   - `/blindtest panel` reopens it when Discord cleared it.
   - Every round is posted with an **Answer** button opening the answer form of the round in play.
   - The panel and the round buttons keep working after a bot restart: their state lives in the database.
@@ -122,7 +122,7 @@ A game has a quiz type (blind test by default) and each round inherits it, or ov
 
 ## Embeds
 
-Every public embed is titled with the game name — the one given at `/blindtest start`, or `<type> #<number>` — and states the quiz type and the scoring mode.
+Every public embed is titled with the game name — the one given at `/blindtest setup`, or `<type> #<number>` — and states the quiz type and the scoring mode.
 
 - A round embed shows the prompt only.
 - The answer appears with the reveal, written as `<Answer> (<Secondary answer>)`.

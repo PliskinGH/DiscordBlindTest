@@ -241,8 +241,8 @@ def add_question(guild: Guild, host_member: DiscordMember, expected_text: str,
                  year: int | None = None, album: str = '', media_url: str = '',
                  choices: Iterable[str] = (),
                  expected_variants: Iterable[str] = (),
-                 secondary_variants: Iterable[str] = ()) -> Question:
-    """Create a guild question, resolving its answers through the library."""
+                 secondary_variants: Iterable[str] = ()) -> dict:
+    """Create a guild question and return its display label with its pk."""
     require_host(guild, host_member)
     year = clean_year(year)
     media_url = media_link(media_url)
@@ -265,22 +265,6 @@ def add_question(guild: Guild, host_member: DiscordMember, expected_text: str,
         if problem:
             raise ValueError(problem)
     logger.info('%s: question %s created', guild, question)
-    return question
-
-
-def add_question_result(guild: Guild, host_member: DiscordMember,
-                        expected_text: str, *, prompt: str = '',
-                        secondary_text: str = '', year: int | None = None,
-                        album: str = '', media_url: str = '',
-                        choices: Iterable[str] = (),
-                        expected_variants: Iterable[str] = (),
-                        secondary_variants: Iterable[str] = ()) -> dict:
-    """Create a guild question and return its display label with its pk."""
-    question = add_question(guild, host_member, expected_text, prompt=prompt,
-                            secondary_text=secondary_text, year=year,
-                            album=album, media_url=media_url, choices=choices,
-                            expected_variants=expected_variants,
-                            secondary_variants=secondary_variants)
     return {'pk': question.pk, 'label': question_line(question),
             'choices': question.choices.count(),
             'variants': question.expected_answer.variants.count()}
@@ -327,21 +311,36 @@ def _given_fields(**values: str) -> dict[str, str]:
             if values.get(field, '').strip()}
 
 
-@transaction.atomic
-def edit_question(guild: Guild, host_member: DiscordMember, question: Question,
-                  *, answer: str = '', artist: str = '', prompt: str = '',
-                  choices: str = '', year: str = '', album: str = '',
-                  media: str = '') -> Question:
-    """Set the fields a host filled in; an empty one keeps, ``-`` drops it.
+def edit_question(guild: Guild, host_member: DiscordMember,
+                  pk: int | str, *, answer: str = '', artist: str = '',
+                  prompt: str = '', choices: str = '', year: str = '',
+                  album: str = '', media: str = '') -> dict:
+    """Change the fields a host filled in and return the new display label.
 
-    Renaming an answer points the question at an existing or new answer of the
-    guild and leaves the old one to the questions and rounds still using it.
+    An empty field keeps its value, ``-`` drops it. Renaming an answer points the
+    question at an existing or new answer of the guild and leaves the old one to
+    the questions and rounds still using it.
     """
-    require_host(guild, host_member)
     given = _given_fields(answer=answer, artist=artist, prompt=prompt,
                           choices=choices, year=year, album=album, media=media)
     if not given:
         raise ValueError(_("Nothing to change."))
+    question = editable_question(guild, host_member, pk)
+    _edit_question(guild, host_member, question, **given)
+    return {'pk': question.pk, 'fields': list(given),
+            'label': question_line(question, with_answer=True),
+            'media_url': question.media_url,
+            'choices': question.choices.count()}
+
+
+@transaction.atomic
+def _edit_question(guild: Guild, host_member: DiscordMember, question: Question,
+                   *, answer: str = '', artist: str = '', prompt: str = '',
+                   choices: str = '', year: str = '', album: str = '',
+                   media: str = '') -> Question:
+    """Set the fields of a question a host has already been cleared for."""
+    given = _given_fields(answer=answer, artist=artist, prompt=prompt,
+                          choices=choices, year=year, album=album, media=media)
     columns = []
     for field in EDITABLE_FIELDS:
         if field in given:
@@ -397,21 +396,6 @@ def _apply_field(guild: Guild, host_member: DiscordMember, question: Question,
             'album': 'album', 'media': 'media_url'}[field]
 
 
-def edit_question_result(guild: Guild, host_member: DiscordMember,
-                         pk: int | str, *, answer: str = '', artist: str = '',
-                         prompt: str = '', choices: str = '', year: str = '',
-                         album: str = '', media: str = '') -> dict:
-    """Change the fields a host filled in and return the new display label."""
-    given = _given_fields(answer=answer, artist=artist, prompt=prompt,
-                          choices=choices, year=year, album=album, media=media)
-    question = editable_question(guild, host_member, pk)
-    edit_question(guild, host_member, question, **given)
-    return {'pk': question.pk, 'fields': list(given),
-            'label': question_line(question, with_answer=True),
-            'media_url': question.media_url,
-            'choices': question.choices.count()}
-
-
 def games_count(guild: Guild) -> int:
     """Return the number of games ever started in the guild."""
     return Game.objects.filter(guild=guild).count()
@@ -423,12 +407,12 @@ def active_game(guild: Guild) -> Game | None:
             .exclude(state=Game.State.FINISHED).first())
 
 
-def start_game(guild: Guild, channel_id: int | None, host_member: DiscordMember,
-               scoring_mode: str = ScoringMode.STANDARD, *,
-               name: str = '', quiz_type: str = QuizType.BLIND_TEST,
-               state: str = Game.State.RUNNING,
-               invoking_id: int | None = None) -> Game:
-    """Start a game in a channel of ``guild``, hosted by ``host_member``.
+def create_game(guild: Guild, channel_id: int | None, host_member: DiscordMember,
+                scoring_mode: str = ScoringMode.STANDARD, *,
+                name: str = '', quiz_type: str = QuizType.BLIND_TEST,
+                state: str = Game.State.RUNNING,
+                invoking_id: int | None = None) -> Game:
+    """Create a game in a channel of ``guild``.
 
     The player row of the host is created when missing and recorded on the game.
     The game is played in the channel the host named, then in the guild's
@@ -451,49 +435,30 @@ def start_game(guild: Guild, channel_id: int | None, host_member: DiscordMember,
                                host=Player.objects.from_discord(host_member),
                                scoring_mode=scoring_mode, name=name.strip(),
                                type=quiz_type, state=state)
-    logger.info('Game %s started by %s in %s', game.pk, game.host, guild)
+    logger.info('Game %s created by %s in %s', game.pk, game.host, guild)
     return game
 
 
 def panel_data(game: Game) -> dict:
     """Return the display values the setup panel of a game shows."""
-    return {'game_name': game.display_name, 'queued': queued_count(game),
+    return {'game_id': game.pk, 'game_name': game.display_name,
+            'queued': queued_count(game),
             'choices': question_choices(game),
             'queued_choices': queued_choices(game),
             'games': game_choices(game.guild, game)}
 
 
-def prepare_result(guild: Guild, channel_id: int | None,
-                   host_member: DiscordMember,
-                   scoring_mode: str = ScoringMode.STANDARD, *,
-                   name: str = '', quiz_type: str = QuizType.BLIND_TEST,
-                   invoking_id: int | None = None) -> dict:
-    """Create a game that is not published yet, and return what it shows."""
-    game = start_game(guild, channel_id, host_member, scoring_mode, name=name,
-                      quiz_type=quiz_type, state=Game.State.SETUP,
-                      invoking_id=invoking_id)
-    data = {'game_id': game.pk,
-            'type_label': QuizType(game.type).label.capitalize(),
-            'scoring_label': game.get_scoring_mode_display(),
-            'created_at': game.created_at, 'channel_id': game.channel_id}
-    data.update(panel_data(game))
-    return data
+def publish_game(game: Game, host_member: DiscordMember) -> dict:
+    """Publish a game and return what its announcement shows.
 
-
-def publish_game(game: Game, host_member: DiscordMember) -> Game:
-    """Publish a game that was being prepared."""
+    A game being prepared becomes the one the server is playing.
+    """
     require_host(game.guild, host_member)
     if not game.is_preparing:
         raise ValueError(_("This game is already published."))
     game.state = Game.State.RUNNING
     game.save(update_fields=['state'])
     logger.info('Game %s published', game.pk)
-    return game
-
-
-def publish_game_result(game: Game, host_member: DiscordMember) -> dict:
-    """Publish a game and return what its announcement shows."""
-    game = publish_game(game, host_member)
     return {'game_id': game.pk, 'game_name': game.display_name,
             'type_label': QuizType(game.type).label.capitalize(),
             'scoring_label': game.get_scoring_mode_display(),
@@ -501,9 +466,24 @@ def publish_game_result(game: Game, host_member: DiscordMember) -> dict:
             'channel_id': game.channel_id}
 
 
-def recap_result(game: Game, host_member: DiscordMember) -> dict:
-    """Close a game and return what its final recap shows."""
-    game = finish_game(game, host_member)
+def finish_game(game: Game, host_member: DiscordMember) -> dict:
+    """End a game, publishing the round still open and its final scores.
+
+    The round in progress is revealed as the reveal command does, and its display
+    values come back under ``reveal`` for the caller to publish; ``reveal`` is
+    None when no round was open.
+    """
+    require_host(game.guild, host_member)
+    if game.state == Game.State.FINISHED:
+        raise ValueError(_("This blind test is already over."))
+    current = current_round(game)
+    reveal = None
+    if current is not None and not current.is_revealed:
+        reveal = reveal_round(current, host_member)
+    game.state = Game.State.FINISHED
+    game.finished_at = timezone.now()
+    game.save(update_fields=['state', 'finished_at'])
+    logger.info('Game %s finished', game.pk)
     rounds = _scored_rounds(game)
     return {'game_id': game.pk, 'game_name': game.display_name,
             'type_label': QuizType(game.type).label.capitalize(),
@@ -513,22 +493,8 @@ def recap_result(game: Game, host_member: DiscordMember) -> dict:
             'rounds': len(rounds),
             'answers': sum(len(round_.guesses.all()) for round_ in rounds),
             'finished_at': game.finished_at,
+            'reveal': reveal,
             'channel_id': game.channel_id}
-
-
-def finish_game(game: Game, host_member: DiscordMember) -> Game:
-    """End a game, revealing the round in progress."""
-    require_host(game.guild, host_member)
-    if game.state == Game.State.FINISHED:
-        raise ValueError(_("This blind test is already over."))
-    current = current_round(game)
-    if current is not None and not current.is_revealed:
-        reveal_round(current, host_member)
-    game.state = Game.State.FINISHED
-    game.finished_at = timezone.now()
-    game.save(update_fields=['state', 'finished_at'])
-    logger.info('Game %s finished', game.pk)
-    return game
 
 
 def current_round(game: Game) -> Round | None:
@@ -707,7 +673,7 @@ def type_override(quiz_type: str, game: Game) -> str:
     return '' if quiz_type == game.type else quiz_type
 
 
-def create_round(game: Game, host_member: DiscordMember, question: Question,
+def _queue_round(game: Game, host_member: DiscordMember, question: Question,
                  quiz_type: str = '', index: int | None = None) -> Round:
     """Queue a round ahead of time so the host does not pick it live."""
     require_host(game.guild, host_member)
@@ -724,10 +690,17 @@ def create_round(game: Game, host_member: DiscordMember, question: Question,
     return round_
 
 
+def create_round(game: Game, host_member: DiscordMember, question: Question,
+                 quiz_type: str = '', index: int | None = None) -> dict:
+    """Queue a round and return the display values the queue note shows."""
+    return round_display(_queue_round(game, host_member, question, quiz_type,
+                                      index))
+
+
 def start_round(game: Game, host_member: DiscordMember,
                 question: Question | None = None,
-                quiz_type: str = '') -> Round:
-    """Open the next round of the game.
+                quiz_type: str = '') -> dict:
+    """Open the next round of the game, and return what its message shows.
 
     Queued rounds created beforehand are started in their index order;
     otherwise the given question (or an unplayed one) is drawn.
@@ -763,7 +736,10 @@ def start_round(game: Game, host_member: DiscordMember,
         queued.save(update_fields=['started_at'])
     logger.info('Game %s round %s started on %s', game.pk, queued.index,
                 queued.question)
-    return queued
+    display = round_display(queued)
+    display['queued'] = queued_count(game)
+    display['form'] = answer_form(display)
+    return display
 
 
 def playable_questions(game: Game, quiz_type: str):
@@ -916,17 +892,6 @@ def guess_form(round_: Round) -> dict:
     return answer_form(round_display(round_))
 
 
-def start_round_result(game: Game, host_member: DiscordMember,
-                       question: Question | None = None,
-                       quiz_type: str = '') -> dict:
-    """Open the next round and return its display values with its pk."""
-    round_ = start_round(game, host_member, question, quiz_type)
-    display = round_display(round_)
-    display['queued'] = queued_count(game)
-    display['form'] = answer_form(display)
-    return display
-
-
 def round_answers(round_: Round) -> dict:
     """Return how many players answered a round and who was right."""
     guesses = list(round_.guesses.select_related('player'))
@@ -937,28 +902,16 @@ def round_answers(round_: Round) -> dict:
                             for guess in right][:MAX_LISTED_PLAYERS]}
 
 
-def reveal_round_result(round_: Round, host_member: DiscordMember) -> dict:
+def reveal_round(round_: Round, host_member: DiscordMember) -> dict:
     """Reveal a round and return its answer with the standings."""
-    round_ = reveal_round(round_, host_member)
+    round_ = _reveal_round(round_, host_member)
     display = round_display(round_)
     display['scores'] = game_scores(round_.game)
     display.update(round_answers(round_))
     return display
 
 
-def queue_round_result(game: Game, host_member: DiscordMember,
-                       question: Question, quiz_type: str = '') -> dict:
-    """Queue a round and return its number and type with its label."""
-    round_ = create_round(game, host_member, question, quiz_type)
-    display = round_display(round_)
-    return {'index': display['index'], 'question_text': display['question_text'],
-            'host_text': display['host_text'],
-            'type_label': display['type_label'],
-            'game_name': display['game_name'],
-            'media_url': display['media_url']}
-
-
-def reveal_round(round_: Round, host_member: DiscordMember) -> Round:
+def _reveal_round(round_: Round, host_member: DiscordMember) -> Round:
     """Mark a round as revealed, which ends it for the players."""
     require_host(round_.game.guild, host_member)
     if round_.is_revealed:

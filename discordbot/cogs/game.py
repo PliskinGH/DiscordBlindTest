@@ -175,7 +175,7 @@ class GameCog(commands.Cog):
             logger.exception('Failed to process ping command')
             await interaction.followup.send('Failed to check database status.', ephemeral=True)
 
-    @group.command(name='start', description='Start a blind test in a channel.')
+    @group.command(name='setup', description='Set up a blind test in a channel.')
     @app_commands.describe(scoring='How the points are awarded.',
                            name='Name of the game, e.g. Fiesta 2026.',
                            channel='Channel to play in.',
@@ -185,12 +185,12 @@ class GameCog(commands.Cog):
         for mode in ScoringMode], quiz_type=[
         app_commands.Choice(name=str(kind.label), value=kind.value)
         for kind in QuizType])
-    async def start(self, interaction: discord.Interaction,
+    async def setup(self, interaction: discord.Interaction,
                     scoring: str = ScoringMode.STANDARD, name: str = '',
                     channel: GameChannel | None = None,
                     quiz_type: str = QuizType.BLIND_TEST) -> None:
-        """Open a game hosted by the player invoking the command."""
-        await self.start_game(interaction, scoring, name, quiz_type, channel)
+        """Open a game to be set up, hosted by the player invoking the command."""
+        await self.setup_game(interaction, scoring, name, quiz_type, channel)
 
     @group.command(name='panel',
                    description='Reopen the private controls of the running game.')
@@ -259,31 +259,34 @@ class GameCog(commands.Cog):
         await self.publish(interaction)
 
 
-    async def start_game(self, interaction: discord.Interaction, scoring: str,
+    async def setup_game(self, interaction: discord.Interaction, scoring: str,
                          name: str = '', quiz_type: str = '',
                          channel: GameChannel | None = None) -> bool:
-        """Prepare a new game and hand its setup controls to the host."""
+        """Set up a new game and hand its setup controls to the host."""
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
             channel_id = named_channel_id(interaction, channel)
-            result = await run_db(services.prepare_result, guild, channel_id,
-                                  interaction.user, scoring, name=name,
-                                  quiz_type=quiz_type or QuizType.BLIND_TEST,
-                                  invoking_id=interaction.channel_id)
-            await self.send_setup_panel(interaction, result)
+            game = await run_db(services.create_game, guild, channel_id,
+                                interaction.user, scoring, name=name,
+                                quiz_type=quiz_type or QuizType.BLIND_TEST,
+                                state=Game.State.SETUP,
+                                invoking_id=interaction.channel_id)
+            data = await run_db(services.panel_data, game)
+            await self.send_setup_panel(interaction, data)
         except PermissionError:
             await interaction.followup.send(
-                'Only hosts of this server can start a blind test.', ephemeral=True)
+                'Only hosts of this server can set up a blind test.',
+                ephemeral=True)
             return False
         except ValueError as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
         except Exception:
-            logger.exception('Failed to start blind test')
+            logger.exception('Failed to set up blind test')
             await interaction.followup.send(
-                'Could not start blind test (a game may already be running in this '
-                'server).', ephemeral=True)
+                'Could not set up the blind test (a game may already be running '
+                'in this server).', ephemeral=True)
             return False
         return True
 
@@ -403,8 +406,7 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     'No blind test is running in this server.', ephemeral=True)
                 return False
-            result = await run_db(services.publish_game_result, game,
-                                  interaction.user)
+            result = await run_db(services.publish_game, game, interaction.user)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -424,7 +426,7 @@ class GameCog(commands.Cog):
         # The game is live, so an announcement that fails must not deny it.
         try:
             await embeds.post(game_channel(interaction, game),
-                              embeds=[embeds.start_embed(
+                              embeds=[embeds.announce_embed(
                                   result, interaction.user.mention)])
         except Exception:
             logger.exception('Failed to post the announcement')
@@ -442,7 +444,7 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     'No blind test is running in this server.', ephemeral=True)
                 return False
-            result = await run_db(services.start_round_result, game, interaction.user)
+            result = await run_db(services.start_round, game, interaction.user)
             message = await embeds.post(game_channel(interaction, game),
                                         embeds=[embeds.round_embed(result)],
                                         view=GamePanel(self))
@@ -476,8 +478,7 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     'No round is running yet.', ephemeral=True)
                 return False
-            result = await run_db(services.reveal_round_result, round_,
-                                  interaction.user)
+            result = await run_db(services.reveal_round, round_, interaction.user)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -487,21 +488,25 @@ class GameCog(commands.Cog):
                 'Could not reveal the round.', ephemeral=True)
             return False
         try:
-            channel = game_channel(interaction, game)
-            await embeds.post(channel, embeds=[embeds.reveal_embed(result)])
-            if result['scores']:
-                await embeds.post(channel, embeds=[embeds.scores_embed(
-                    result, f'Round {result["index"]} scores',
-                    embeds.leader_line(result['scores'], 'is currently winning'))])
-            await interaction.followup.send(
-                'Round {} revealed.'.format(result['index']), ephemeral=True)
+            await self.post_reveal(game_channel(interaction, game), result)
         except Exception:
             logger.exception('Failed to publish the revealed round')
             await interaction.followup.send(
                 'Round {} revealed, but its answer could not be published.'.format(
                     result['index']), ephemeral=True)
             return False
+        await interaction.followup.send(
+            'Round {} revealed.'.format(result['index']), ephemeral=True)
         return True
+
+    async def post_reveal(self, channel: discord.abc.Messageable,
+                          reveal: dict) -> None:
+        """Publish the answer of a revealed round with the standings."""
+        await embeds.post(channel, embeds=[embeds.reveal_embed(reveal)])
+        if reveal['scores']:
+            await embeds.post(channel, embeds=[embeds.scores_embed(
+                reveal, f'Round {reveal["index"]} scores',
+                embeds.leader_line(reveal['scores'], 'is currently winning'))])
 
     async def ask_question(self, interaction: discord.Interaction) -> bool:
         """Offer the unplayed questions of the library to the host."""
@@ -549,7 +554,7 @@ class GameCog(commands.Cog):
                     'That question no longer exists.', ephemeral=True)
                 return False
             chosen = await run_db(services.question_by_pk, int(question))
-            result = await run_db(services.queue_round_result, game,
+            result = await run_db(services.create_round, game,
                                   interaction.user, chosen, quiz_type)
             await interaction.followup.send(
                 round_note('Round {} queued for {}: {}.'.format(
@@ -583,7 +588,7 @@ class GameCog(commands.Cog):
             [int(question)])
 
     async def end_game(self, interaction: discord.Interaction) -> bool:
-        """Close the game and publish the final scores."""
+        """Close the game, publishing the round left open and the final scores."""
         await self.defer(interaction, update_panel=True)
         try:
             guild = await guild_for(interaction)
@@ -593,16 +598,15 @@ class GameCog(commands.Cog):
                     interaction, 'No blind test is running in this server.',
                     closed=True)
                 return False
-            if game.is_preparing:
+            announced = not game.is_preparing
+            result = await run_db(services.finish_game, game, interaction.user)
+            if not announced:
                 # A game never announced closes without a public recap.
-                game = await run_db(services.finish_game, game,
-                                    interaction.user)
                 await self.respond(
                     interaction,
-                    f'{game.display_name} was closed before being published.',
+                    f'{result["game_name"]} was closed before being published.',
                     closed=True, panel=SetupPanel(self))
                 return True
-            result = await run_db(services.recap_result, game, interaction.user)
         except PermissionError:
             await self.respond(
                 interaction, 'Only hosts of this server can end the blind test.')
@@ -611,11 +615,19 @@ class GameCog(commands.Cog):
             logger.exception('Failed to end the blind test')
             await self.respond(interaction, 'Could not end the blind test.')
             return False
-        # The game is over, so a recap that fails to post must not deny it.
+        # The game is over, so a post that fails must not deny it.
         await self.respond(interaction, f'{result["game_name"]} ended.', closed=True)
+        channel = game_channel(interaction, game)
+        if result['reveal'] is not None:
+            try:
+                await self.post_reveal(channel, result['reveal'])
+            except Exception:
+                logger.exception('Failed to publish the revealed round')
+                await interaction.followup.send(
+                    'The last round was revealed, but its answer could not be '
+                    'posted.', ephemeral=True)
         try:
-            await embeds.post(game_channel(interaction, game),
-                              embeds=[embeds.recap_embed(result)])
+            await embeds.post(channel, embeds=[embeds.recap_embed(result)])
         except Exception:
             logger.exception('Failed to publish the final scores')
             await interaction.followup.send(

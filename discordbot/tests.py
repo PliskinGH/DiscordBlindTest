@@ -192,8 +192,11 @@ class EmbedTests(SimpleTestCase):
 class FakeRole:
     """Minimal stand-in for a ``discord.Role``."""
 
-    def __init__(self, role_id: int) -> None:
+    def __init__(self, role_id: int, guild=None, position: int = 1) -> None:
         self.id = role_id
+        self.guild = guild
+        self.position = position
+        self.mention = f'<@&{role_id}>'
 
 
 class FakePermissions:
@@ -207,11 +210,12 @@ class FakeMember:
     """Minimal stand-in for a ``discord.Member``."""
 
     def __init__(self, user_id: int, roles: Iterable[int] = (),
-                 manage_guild: bool = False) -> None:
+                 manage_guild: bool = False, top_role: FakeRole | None = None) -> None:
         self.id = user_id
         self.name = f'user{user_id}'
         self.roles = [FakeRole(role_id) for role_id in roles]
         self.guild_permissions = FakePermissions(manage_guild)
+        self.top_role = top_role or FakeRole(0, position=0)
 
     @property
     def mention(self) -> str:
@@ -225,10 +229,16 @@ class FakeGuild:
         self.id = guild_id
         self.name = name
         self.channels = {}
+        # The bot sits above every role a test may want to call in.
+        self.me = FakeMember(1, top_role=FakeRole(999, self, position=50))
 
     def get_channel(self, channel_id: int):
         """Return a channel the guild holds, when it holds one."""
         return self.channels.get(channel_id)
+
+    def role(self, role_id: int, position: int = 1) -> FakeRole:
+        """Return a role of this guild, below the bot."""
+        return FakeRole(role_id, self, position)
 
 
 class FakeGuildChannel:
@@ -256,12 +266,15 @@ class FakeChannel:
         self.embeds = []
         self.contents = []
         self.messages = []
+        self.allowed_mentions = []
 
-    async def send(self, content=None, *, embed=None, embeds=(), view=None):
+    async def send(self, content=None, *, embed=None, embeds=(), view=None,
+                   allowed_mentions=None):
         message = FakeMessage(500 + len(self.messages))
         self.contents.append(content)
         self.embeds.extend(embeds or ([embed] if embed else []))
         self.messages.append(message)
+        self.allowed_mentions.append(allowed_mentions)
         return message
 
 
@@ -384,7 +397,8 @@ class BotSetupTests(SimpleTestCase):
             'admin', 'admin channel', 'admin channel clear',
             'admin channel set', 'admin channel show', 'admin host',
             'admin host add', 'admin host list',
-            'admin host remove', 'blindtest', 'blindtest clear',
+            'admin host remove', 'admin ping', 'admin ping clear', 'admin ping set',
+            'admin ping show', 'blindtest', 'blindtest clear',
             'blindtest copy', 'blindtest end', 'blindtest guess',
             'blindtest next', 'blindtest panel', 'blindtest publish',
             'blindtest queue', 'blindtest reveal', 'blindtest setup',
@@ -557,13 +571,15 @@ class FlowTestCase(TransactionTestCase):
                                   Answer.objects.create(text=f'No {text}')])
         return question
 
-    def create_game(self, quiz_type: str = '') -> None:
+    def create_game(self, quiz_type: str = '',
+                     ping_role_id: int | None = None) -> None:
         """Create the rows a flow works on, as the bot would have."""
         guild = Guild.objects.create(discord_id=1, name='Server')
         services.add_host(guild, user_mention(42),
                           FakeMember(42, manage_guild=True))
         game = services.create_game(guild, 100, FakeMember(42),
-                                   quiz_type=quiz_type or QuizType.BLIND_TEST)
+                                   quiz_type=quiz_type or QuizType.BLIND_TEST,
+                                   ping_role_id=ping_role_id)
         services.start_round(game, FakeMember(42),
                              self.question(quiz_type, 'Song', 'Band'))
         self.question(quiz_type, 'Spare', 'Spare Band')
@@ -934,6 +950,36 @@ class SetupFlowTests(FlowTestCase):
         self.assertIn('another server', host.followup.sent[0])
         self.assertEqual(Game.objects.count(), 0)
 
+    def test_setup_calls_in_the_role_the_host_named(self) -> None:
+        self.prepare_guild()
+        role = FakeGuild(1).role(99)
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).setup_game(host, 'STANDARD', 'Fiesta',
+                                                     role=role))
+        self.assertEqual(Game.objects.get().ping_role_id, 99)
+
+    def test_setup_without_a_role_calls_nobody_in(self) -> None:
+        self.prepare_guild()
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).setup_game(host, 'STANDARD', 'Fiesta'))
+        self.assertIsNone(Game.objects.get().ping_role_id)
+
+    def test_setup_refuses_a_role_of_another_server(self) -> None:
+        self.prepare_guild()
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).setup_game(
+            host, 'STANDARD', 'Fiesta', role=FakeGuild(2).role(99)))
+        self.assertIn('another server', host.followup.sent[0])
+        self.assertEqual(Game.objects.count(), 0)
+
+    def test_setup_refuses_a_role_above_the_bot(self) -> None:
+        self.prepare_guild()
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).setup_game(
+            host, 'STANDARD', 'Fiesta', role=FakeGuild(1).role(99, position=99)))
+        self.assertIn('above me', host.followup.sent[0])
+        self.assertEqual(Game.objects.count(), 0)
+
     def test_the_add_select_queues_the_picked_questions(self) -> None:
         question = self.question('', 'Song', 'Band')
         _cog, panel, _host = self._setup()
@@ -998,6 +1044,49 @@ class SetupFlowTests(FlowTestCase):
         [embed] = click.channel.embeds
         self.assertEqual(embed.title, 'Fiesta')
 
+    def test_the_announcement_calls_in_the_role_of_the_game(self) -> None:
+        guild = self.prepare_guild()
+        services.set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
+        host = FakeInteraction()
+        cog = GameCog(create_bot())
+        asyncio.run(cog.setup_game(host, 'STANDARD', 'Fiesta'))
+        click = FakeInteraction(InteractionType.component)
+        asyncio.run(cog.publish(click))
+        self.assertEqual(click.channel.contents, ['<@&99>'])
+        self.assertEqual([mentions.roles for mentions in
+                          click.channel.allowed_mentions if mentions],
+                         [[99]])
+
+    def test_the_announcement_of_a_silent_game_calls_nobody_in(self) -> None:
+        _cog, panel, _host = self._setup()
+        click = self._click(self._control(panel, SETUP_PUBLISH_ID))
+        self.assertEqual(click.channel.contents, [None])
+        self.assertEqual(click.channel.allowed_mentions, [None])
+
+    def test_a_round_calls_in_the_role_of_the_game(self) -> None:
+        guild = self.prepare_guild()
+        services.add_question(guild, FakeMember(42), 'Song')
+        services.set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
+        cog = GameCog(create_bot())
+        asyncio.run(cog.setup_game(FakeInteraction(), 'STANDARD', 'Fiesta'))
+        asyncio.run(cog.publish(FakeInteraction()))
+        opened = FakeInteraction()
+        asyncio.run(cog.open_next_round(opened))
+        self.assertEqual(opened.channel.contents, ['<@&99>'])
+        self.assertEqual([mentions.roles for mentions in
+                          opened.channel.allowed_mentions if mentions], [[99]])
+
+    def test_a_round_of_a_silent_game_calls_nobody_in(self) -> None:
+        guild = self.prepare_guild()
+        services.add_question(guild, FakeMember(42), 'Song')
+        cog = GameCog(create_bot())
+        asyncio.run(cog.setup_game(FakeInteraction(), 'STANDARD', 'Fiesta'))
+        asyncio.run(cog.publish(FakeInteraction()))
+        opened = FakeInteraction()
+        asyncio.run(cog.open_next_round(opened))
+        self.assertEqual(opened.channel.contents, [None])
+        self.assertEqual(opened.channel.allowed_mentions, [None])
+
     def test_publishing_twice_is_reported(self) -> None:
         _cog, panel, _host = self._setup()
         button = self._control(panel, SETUP_PUBLISH_ID)
@@ -1040,6 +1129,73 @@ class SetupFlowTests(FlowTestCase):
         [view] = command.followup.views
         self.assertIsInstance(view, SetupPanel)
         self.assertIn('Fiesta', command.followup.sent[0])
+
+
+class AdminPingTests(FlowTestCase):
+    """The administrators of a server pick the role its games call in."""
+
+    @staticmethod
+    def _admin_interaction() -> FakeInteraction:
+        """Return an interaction whose member may manage the server."""
+        interaction = FakeInteraction()
+        interaction.user = FakeMember(42, manage_guild=True)
+        return interaction
+
+    @staticmethod
+    def _run(command, interaction, *args, **kwargs) -> FakeInteraction:
+        """Run an admin command the way Discord would."""
+        asyncio.run(command.callback(AdminCog(create_bot()), interaction,
+                                    *args, **kwargs))
+        return interaction
+
+    def test_setting_the_default_ping_role_stores_the_named_one(self) -> None:
+        self.prepare_guild()
+        role = FakeGuild(1).role(99)
+        interaction = self._run(AdminCog.ping_set, self._admin_interaction(),
+                               role)
+        self.assertEqual(Guild.objects.get().default_ping_role_id, 99)
+        self.assertIn('<@&99>', interaction.followup.sent[0])
+
+    def test_a_member_who_is_not_an_administrator_cannot_set_it(self) -> None:
+        self.prepare_guild()
+        interaction = self._run(AdminCog.ping_set, FakeInteraction(),
+                                FakeGuild(1).role(99))
+        self.assertIsNone(Guild.objects.get().default_ping_role_id)
+        self.assertIn('Only server administrators', interaction.followup.sent[0])
+
+    def test_a_role_above_the_bot_is_refused(self) -> None:
+        self.prepare_guild()
+        role = FakeGuild(1).role(99, position=99)
+        interaction = self._run(AdminCog.ping_set, self._admin_interaction(),
+                               role)
+        self.assertIsNone(Guild.objects.get().default_ping_role_id)
+        self.assertIn('above me', interaction.followup.sent[0])
+
+    def test_clearing_the_default_ping_role_leaves_no_default(self) -> None:
+        self.prepare_guild()
+        self._run(AdminCog.ping_set, self._admin_interaction(),
+                  FakeGuild(1).role(99))
+        interaction = self._run(AdminCog.ping_clear, self._admin_interaction())
+        self.assertIsNone(Guild.objects.get().default_ping_role_id)
+        self.assertEqual(interaction.followup.sent,
+                         ['Blind tests now call nobody in.'])
+
+    def test_showing_the_default_ping_role_reports_it(self) -> None:
+        self.prepare_guild()
+        interaction = self._run(AdminCog.ping_show, self._admin_interaction())
+        self.assertIn('No default ping role', interaction.followup.sent[0])
+        self._run(AdminCog.ping_set, self._admin_interaction(),
+                  FakeGuild(1).role(99))
+        interaction = self._run(AdminCog.ping_show, self._admin_interaction())
+        self.assertIn('<@&99>', interaction.followup.sent[0])
+
+    def test_a_game_follows_the_default_ping_role(self) -> None:
+        guild = self.prepare_guild()
+        self._run(AdminCog.ping_set, self._admin_interaction(),
+                  FakeGuild(1).role(99))
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).setup_game(host, 'STANDARD', 'Fiesta'))
+        self.assertEqual(Game.objects.get().ping_role_id, 99)
 
 
 class AdminChannelTests(FlowTestCase):

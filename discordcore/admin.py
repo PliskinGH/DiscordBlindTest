@@ -35,8 +35,10 @@ class HostInline(admin.TabularInline):
 
 @admin.register(Guild)
 class GuildAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'discord_id', 'default_channel_id', 'created_at')
-    search_fields = ('name', 'discord_id', 'default_channel_id')
+    list_display = ('id', 'name', 'discord_id', 'default_channel_id',
+                    'default_ping_role_id', 'created_at')
+    search_fields = ('name', 'discord_id', 'default_channel_id',
+                     'default_ping_role_id')
     inlines = (HostInline,)
     readonly_fields = ('created_at',)
 

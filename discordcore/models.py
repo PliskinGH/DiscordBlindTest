@@ -128,6 +128,10 @@ class Guild(models.Model):
         _('default channel ID'), blank=True, null=True,
         help_text=_('Where games of this server are played when the host '
                     'names no channel.'))
+    default_ping_role_id = models.BigIntegerField(
+        _('default ping role ID'), blank=True, null=True,
+        help_text=_('The default role pinged when a game of this server is '
+                    'published and each round opens.'))
     created_at = models.DateTimeField(_('created at'), auto_now_add=True)
 
     objects = GuildManager()

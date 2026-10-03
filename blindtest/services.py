@@ -109,6 +109,41 @@ def clear_default_channel(guild: Guild, admin_member: DiscordMember) -> Guild:
     return guild
 
 
+def default_ping_role_of(guild: Guild) -> int | None:
+    """Return the role pinged for the guild's games."""
+    return guild.default_ping_role_id
+
+
+def set_default_ping_role(guild: Guild, role_id: int,
+                          admin_member: DiscordMember) -> Guild:
+    """Make ``role_id`` the role the guild's games will ping."""
+    require_admin(admin_member)
+    guild.default_ping_role_id = role_id
+    guild.save(update_fields=['default_ping_role_id'])
+    # The cached row would hand the next command the previous default.
+    forget(guild_row_key(guild.discord_id))
+    logger.info('%s: %s is now the default ping role', guild, role_id)
+    return guild
+
+
+def clear_default_ping_role(guild: Guild, admin_member: DiscordMember) -> Guild:
+    """Clear the default guild's ping."""
+    require_admin(admin_member)
+    guild.default_ping_role_id = None
+    guild.save(update_fields=['default_ping_role_id'])
+    forget(guild_row_key(guild.discord_id))
+    logger.info('%s: default ping role cleared', guild)
+    return guild
+
+
+def target_ping_role_id(guild: Guild, ping_role_id: int | None) -> int | None:
+    """Return the role a game pings: the one set, else the guild default.
+
+    No ping if neither is known.
+    """
+    return ping_role_id if ping_role_id is not None else guild.default_ping_role_id
+
+
 def target_channel_id(guild: Guild, channel_id: int | None,
                       invoking_id: int | None = None) -> int:
     """Return the channel a game is played in, in the following order of preference.
@@ -411,12 +446,14 @@ def create_game(guild: Guild, channel_id: int | None, host_member: DiscordMember
                 scoring_mode: str = ScoringMode.STANDARD, *,
                 name: str = '', quiz_type: str = QuizType.BLIND_TEST,
                 state: str = Game.State.RUNNING,
-                invoking_id: int | None = None) -> Game:
+                invoking_id: int | None = None,
+                ping_role_id: int | None = None) -> Game:
     """Create a game in a channel of ``guild``.
 
     The player row of the host is created when missing and recorded on the game.
     The game is played in the channel the host named, then in the guild's
-    default channel, then in the one the host started it from.
+    default channel, then in the one the host started it from. It pings the
+    role the host named, else the guild's default one.
     """
     require_host(guild, host_member)
     if scoring_mode not in ScoringMode.values:
@@ -432,6 +469,8 @@ def create_game(guild: Guild, channel_id: int | None, host_member: DiscordMember
                              % {'name': active.display_name})
         raise ValueError(_("A blind test is already running in this server."))
     game = Game.objects.create(guild=guild, channel_id=target_id,
+                               ping_role_id=target_ping_role_id(
+                                   guild, ping_role_id),
                                host=Player.objects.from_discord(host_member),
                                scoring_mode=scoring_mode, name=name.strip(),
                                type=quiz_type, state=state)
@@ -463,6 +502,7 @@ def publish_game(game: Game, host_member: DiscordMember) -> dict:
             'type_label': QuizType(game.type).label.capitalize(),
             'scoring_label': game.get_scoring_mode_display(),
             'queued': queued_count(game), 'created_at': game.created_at,
+            'ping_role_id': game.ping_role_id,
             'channel_id': game.channel_id}
 
 
@@ -739,6 +779,7 @@ def start_round(game: Game, host_member: DiscordMember,
     display = round_display(queued)
     display['queued'] = queued_count(game)
     display['form'] = answer_form(display)
+    display['ping_role_id'] = game.ping_role_id
     return display
 
 

@@ -144,6 +144,10 @@ class Game(models.Model):
     guild = models.ForeignKey('discordcore.Guild', on_delete=models.PROTECT,
                               related_name='games', verbose_name=_('guild'))
     channel_id = models.BigIntegerField(_('Discord channel ID'))
+    ping_role_id = models.BigIntegerField(
+        _('ping role ID'), blank=True, null=True,
+        help_text=_('The role pinged for the game when ' \
+                    'it is published and each round opens.'))
     name = models.CharField(_('name'), max_length=100, blank=True)
     type = models.CharField(_('type'), max_length=20, choices=QuizType,
                             default=QuizType.BLIND_TEST)

@@ -49,6 +49,38 @@ def named_channel_id(interaction: discord.Interaction,
     return channel.id
 
 
+def require_pingable(interaction: discord.Interaction,
+                     role: discord.Role) -> None:
+    """Raise ValueError when the bot cannot ping this role.
+
+    A role above the bot's highest one makes Discord reject every message
+    naming it, which would swallow the announcement and every round.
+    """
+    if role.guild.id != interaction.guild.id:
+        raise ValueError("That role belongs to another server.")
+    if role.position >= interaction.guild.me.top_role.position:
+        raise ValueError("That role is above me: I cannot ping it.")
+
+
+def named_ping_role_id(interaction: discord.Interaction,
+                       role: discord.Role | None) -> int | None:
+    """Return the ID of the role the host named, or None when it named none.
+
+    Which role a game pings is the domain's prerogative, in
+    ``services.target_ping_role_id``; this only checks that the bot may use it.
+    """
+    if role is None:
+        return None
+    require_pingable(interaction, role)
+    return role.id
+
+
+def ping_text(payload: dict) -> tuple[str, list[int]]:
+    """Return the role ping formatted for discord."""
+    role = payload.get('ping_role_id')
+    return (f'<@&{role}>', [role]) if role else ('', [])
+
+
 def setup_text(data: dict) -> str:
     """Return the line naming the game being prepared and its queue."""
     return ('{}: {} question(s) queued. Add, drop or copy questions, then '
@@ -179,6 +211,7 @@ class GameCog(commands.Cog):
     @app_commands.describe(scoring='How the points are awarded.',
                            name='Name of the game, e.g. Fiesta 2026.',
                            channel='Channel to play in.',
+                           role='Role to ping.',
                            quiz_type='How the rounds are played.')
     @app_commands.choices(scoring=[
         app_commands.Choice(name=str(mode.label), value=mode.value)
@@ -188,9 +221,10 @@ class GameCog(commands.Cog):
     async def setup(self, interaction: discord.Interaction,
                     scoring: str = ScoringMode.STANDARD, name: str = '',
                     channel: GameChannel | None = None,
+                    role: discord.Role | None = None,
                     quiz_type: str = QuizType.BLIND_TEST) -> None:
         """Open a game to be set up, hosted by the player invoking the command."""
-        await self.setup_game(interaction, scoring, name, quiz_type, channel)
+        await self.setup_game(interaction, scoring, name, quiz_type, channel, role)
 
     @group.command(name='panel',
                    description='Reopen the private controls of the running game.')
@@ -261,17 +295,20 @@ class GameCog(commands.Cog):
 
     async def setup_game(self, interaction: discord.Interaction, scoring: str,
                          name: str = '', quiz_type: str = '',
-                         channel: GameChannel | None = None) -> bool:
+                         channel: GameChannel | None = None,
+                         role: discord.Role | None = None) -> bool:
         """Set up a new game and hand its setup controls to the host."""
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
             channel_id = named_channel_id(interaction, channel)
+            ping_role_id = named_ping_role_id(interaction, role)
             game = await run_db(services.create_game, guild, channel_id,
                                 interaction.user, scoring, name=name,
                                 quiz_type=quiz_type or QuizType.BLIND_TEST,
                                 state=Game.State.SETUP,
-                                invoking_id=interaction.channel_id)
+                                invoking_id=interaction.channel_id,
+                                ping_role_id=ping_role_id)
             data = await run_db(services.panel_data, game)
             await self.send_setup_panel(interaction, data)
         except PermissionError:
@@ -424,10 +461,12 @@ class GameCog(commands.Cog):
             await interaction.followup.send(text, ephemeral=True,
                                             view=HostPanel(self))
         # The game is live, so an announcement that fails must not deny it.
+        ping, mentions = ping_text(result)
         try:
-            await embeds.post(game_channel(interaction, game),
+            await embeds.post(game_channel(interaction, game), content=ping,
                               embeds=[embeds.announce_embed(
-                                  result, interaction.user.mention)])
+                                  result, interaction.user.mention)],
+                              mentions=mentions)
         except Exception:
             logger.exception('Failed to post the announcement')
             await interaction.followup.send(
@@ -445,9 +484,11 @@ class GameCog(commands.Cog):
                     'No blind test is running in this server.', ephemeral=True)
                 return False
             result = await run_db(services.start_round, game, interaction.user)
+            ping, mentions = ping_text(result)
             message = await embeds.post(game_channel(interaction, game),
+                                        content=ping,
                                         embeds=[embeds.round_embed(result)],
-                                        view=GamePanel(self))
+                                        view=GamePanel(self), mentions=mentions)
             self.cache_form(message.id, result['form'])
             await interaction.followup.send(
                 round_note('Round {} opened: {}.'.format(

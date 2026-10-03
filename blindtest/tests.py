@@ -250,6 +250,77 @@ class DefaultChannelTests(GameTestCase):
         self.assertIsNone(services.default_channel_of(self.other_guild))
 
 
+class DefaultPingRoleTests(GameTestCase):
+    def test_a_guild_has_no_default_ping_role(self):
+        self.assertIsNone(services.default_ping_role_of(self.guild))
+
+    def test_an_administrator_sets_the_default_ping_role(self):
+        services.set_default_ping_role(self.guild, 99, self.admin)
+        self.assertEqual(services.default_ping_role_of(self.guild), 99)
+        self.assertEqual(
+            Guild.objects.get(pk=self.guild.pk).default_ping_role_id, 99)
+
+    def test_only_administrators_set_the_default_ping_role(self):
+        with self.assertRaises(PermissionError):
+            services.set_default_ping_role(self.guild, 99, self.host)
+        self.assertIsNone(services.default_ping_role_of(self.guild))
+
+    def test_only_administrators_clear_the_default_ping_role(self):
+        services.set_default_ping_role(self.guild, 99, self.admin)
+        with self.assertRaises(PermissionError):
+            services.clear_default_ping_role(self.guild, self.host)
+        self.assertEqual(services.default_ping_role_of(self.guild), 99)
+
+    def test_clearing_leaves_the_games_calling_nobody_in(self):
+        services.set_default_ping_role(self.guild, 99, self.admin)
+        services.clear_default_ping_role(self.guild, self.admin)
+        self.assertIsNone(services.default_ping_role_of(self.guild))
+        game = services.create_game(self.guild, 100, self.host)
+        self.assertIsNone(game.ping_role_id)
+
+    def test_the_default_is_read_from_the_database_after_a_cached_read(self):
+        Guild.objects.from_discord(FakeGuild(1, 'Server'))
+        services.set_default_ping_role(self.guild, 99, self.admin)
+        self.assertEqual(
+            Guild.objects.from_discord(
+                FakeGuild(1, 'Server')).default_ping_role_id, 99)
+
+    def test_the_default_of_a_guild_is_its_own(self):
+        services.set_default_ping_role(self.guild, 99, self.admin)
+        self.assertIsNone(services.default_ping_role_of(self.other_guild))
+
+    def test_a_game_without_a_role_follows_the_guild_default(self):
+        services.set_default_ping_role(self.guild, 99, self.admin)
+        game = services.create_game(self.guild, 100, self.host)
+        self.assertEqual(game.ping_role_id, 99)
+
+    def test_the_role_of_a_game_wins_over_the_guild_default(self):
+        services.set_default_ping_role(self.guild, 99, self.admin)
+        game = services.create_game(self.guild, 100, self.host,
+                                    ping_role_id=77)
+        self.assertEqual(game.ping_role_id, 77)
+
+    def test_a_game_with_no_role_anywhere_calls_nobody_in(self):
+        game = services.create_game(self.guild, 100, self.host)
+        self.assertIsNone(game.ping_role_id)
+
+    def test_the_role_travels_with_the_announcement_and_the_rounds(self):
+        game = services.create_game(self.guild, 100, self.host,
+                                    state=Game.State.SETUP, ping_role_id=99)
+        announced = services.publish_game(game, self.host)
+        self.assertEqual(announced['ping_role_id'], 99)
+        opened = services.start_round(game, self.host, self.question)
+        self.assertEqual(opened['ping_role_id'], 99)
+
+    def test_the_announcement_of_a_silent_game_names_no_role(self):
+        game = services.create_game(self.guild, 100, self.host,
+                                    state=Game.State.SETUP)
+        announced = services.publish_game(game, self.host)
+        opened = services.start_round(game, self.host, self.question)
+        self.assertIsNone(announced['ping_role_id'])
+        self.assertIsNone(opened['ping_role_id'])
+
+
 class RoundTests(GameTestCase):
     def setUp(self):
         super().setUp()

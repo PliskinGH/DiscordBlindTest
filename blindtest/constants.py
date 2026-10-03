@@ -7,7 +7,8 @@ POINTS_PER_SECONDARY = 1
 # Extra points for the three fastest correct answers: 3, 2 and 1 in total.
 SPEED_BONUS = (2, 1, 0)
 # Shown by a blind test round whose question defines no prompt.
-DEFAULT_BLIND_TEST_PROMPT = _('Guess the song and the artist!')
+DEFAULT_BLIND_TEST_PROMPT = _('Listen to the music and guess the title '
+                              'and/or the artist!')
 # Highest year a question may carry.
 MAX_YEAR = 9999
 # Fields of a question a host edits from Discord, in question add order.

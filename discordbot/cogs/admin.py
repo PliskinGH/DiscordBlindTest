@@ -10,7 +10,7 @@ from blindtest import services
 from discordcore.mentions import role_mention, user_mention
 
 from ..db import guild_for, run_db
-from .game import GameChannel
+from .game import GameChannel, require_pingable
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,10 @@ class AdminCog(commands.Cog):
     channel = app_commands.Group(
         name='channel',
         description='Where the blind tests of this server are played.',
+        parent=group)
+    ping = app_commands.Group(
+        name='ping',
+        description='The role the blind tests of this server will ping by default.',
         parent=group)
 
     @app_commands.default_permissions(manage_guild=True)
@@ -182,6 +186,67 @@ class AdminCog(commands.Cog):
             logger.exception('Failed to show the default channel')
             await interaction.followup.send(
                 'Could not show the default channel.', ephemeral=True)
+
+    @app_commands.default_permissions(manage_guild=True)
+    @ping.command(name='set',
+                  description='Ping this role when a blind test opens.')
+    @app_commands.describe(role='Role to ping when a game starts or a round opens.')
+    async def ping_set(self, interaction: discord.Interaction,
+                       role: discord.Role) -> None:
+        """Make a role the one the server's games ping."""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            guild = await guild_for(interaction)
+            require_pingable(interaction, role)
+            await run_db(services.set_default_ping_role, guild, role.id,
+                         interaction.user)
+            await interaction.followup.send(
+                f'Blind tests now ping {role.mention}.', ephemeral=True)
+        except (PermissionError, ValueError) as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+        except Exception:
+            logger.exception('Failed to set the default ping role')
+            await interaction.followup.send(
+                'Could not set the default ping role.', ephemeral=True)
+
+    @app_commands.default_permissions(manage_guild=True)
+    @ping.command(name='clear',
+                  description='Clear the default ping role for blind tests.')
+    async def ping_clear(self, interaction: discord.Interaction) -> None:
+        """Drop the default ping role of the server."""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            guild = await guild_for(interaction)
+            await run_db(services.clear_default_ping_role, guild,
+                         interaction.user)
+            await interaction.followup.send(
+                'Blind tests now ping nobody.', ephemeral=True)
+        except PermissionError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+        except Exception:
+            logger.exception('Failed to clear the default ping role')
+            await interaction.followup.send(
+                'Could not clear the default ping role.', ephemeral=True)
+
+    @app_commands.default_permissions(manage_guild=True)
+    @ping.command(name='show',
+                  description='Show the role the blind tests of this server will ping by default.')
+    async def ping_show(self, interaction: discord.Interaction) -> None:
+        """Report the default ping role of the server."""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            guild = await guild_for(interaction)
+            role_id = await run_db(services.default_ping_role_of, guild)
+            if role_id is None:
+                await interaction.followup.send(
+                    'No default ping role: a game pings nobody.', ephemeral=True)
+                return
+            await interaction.followup.send(
+                f'Blind tests ping <@&{role_id}>.', ephemeral=True)
+        except Exception:
+            logger.exception('Failed to show the default ping role')
+            await interaction.followup.send(
+                'Could not show the default ping role.', ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

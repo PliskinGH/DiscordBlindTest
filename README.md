@@ -49,7 +49,7 @@ python manage.py test         # test suite
 | Command | Description |
 | --- | --- |
 | `/ping` | Gateway latency and number of games in the database |
-| `/blindtest setup` | Set up a game: optional `channel` where to play the game, plus name, quiz type and scoring mode (hosts only) |
+| `/blindtest setup` | Set up a game: optional `channel` where to play the game and `role` to ping, plus name, quiz type and scoring mode (hosts only) |
 | `/blindtest publish` | Publish the game being prepared and announce it in its channel (hosts only) |
 | `/blindtest panel` | Reopen the private controls of the running game (hosts only) |
 | `/blindtest guess` | Submit your answer for the round in play (players) |
@@ -66,6 +66,9 @@ python manage.py test         # test suite
 | `/admin channel set` | Default channel for the games (server administrators) |
 | `/admin channel clear` | Clear the default channel (server administrators) |
 | `/admin channel show` | Show where games are played by default (server administrators) |
+| `/admin ping set` | Default role to ping when a game is published or a round opens (server administrators) |
+| `/admin ping clear` | Clear the default ping (server administrators) |
+| `/admin ping show` | Show the role pinged by default (server administrators) |
 | `/library answer add` | Register an answer in this server's library (hosts) |
 | `/library variant add` | Accept another text for an answer, e.g. `Song (Remastered)` for `Song` (hosts) |
 | `/library variant list` | Show the variants accepted for an answer (hosts) |
@@ -80,10 +83,15 @@ python manage.py test         # test suite
   - Its page lists hosts as Discord mentions — `<@123456789>` for a user, `<@&123456789>` for a role.
   - Members with the Discord "Manage Server" permission can always host, and manage the host list with `/admin host ...`.
 
-- Where a game is played is per server too:
+- The channel the game is played in can be configured:
   - `/admin channel set` records the default channel of the server.
   - `/blindtest setup channel=...` plays that game in the named channel or thread.
-  - The current channel is the fallback in case none of these are set.
+  - The current interaaction channel is the fallback in case none of these are set.
+
+- Same for the role that would be pinged whenever the game is published and at the start of every round:
+  - `/admin ping set` records the default role to ping on the server.
+  - `/blindtest setup role=...` defines a specific role for the game.
+  - No ping if none of these are set.
 
 - `/blindtest setup` sets up a game without announcing it.
   - The host receives a private setup panel to add, drop or copy questions.
@@ -134,9 +142,9 @@ Every public embed is titled with the game name — the one given at `/blindtest
 
 ## Deployment
 
-Any host able to run PostgreSQL, the environment variables above, and two long-running processes works.
+Any host able to run PostgreSQL (or any compatible database, since Django ORM is agnostic), the environment variables above, and two long-running processes works.
 
-- `Procfile` declares these three for the platforms (Heroku, Dokku, and the like) that read one:
+- `Procfile` declares the following for the platforms (Heroku, Dokku, and the like) that read one:
   - `web` process: `gunicorn discordblindtest.wsgi:application`.
   - `worker` process: `python manage.py runbot`.
   - Release phase: `python manage.py migrate --no-input`.
@@ -144,5 +152,5 @@ Any host able to run PostgreSQL, the environment variables above, and two long-r
 - `python manage.py collectstatic --no-input` fills `STATIC_ROOT` (`staticfiles/`), at build time (already handled by herokuish buildpacks).
 - WhiteNoise serves those files from the `web` process.
 - `SECRET_KEY` is required as soon as `DEBUG` is off, which is the default, so set it with `ALLOWED_HOSTS` (space-separated) before the first build.
-- `DATABASE_URL` is read by `dj-database-url`, so a database add-on of the host is enough.
+- `DATABASE_URL` is read by `dj-database-url`, so a database add-on of the host is enough (e.g. on dokku: `dokku postgres:create` and `dokku postgres:link`).
 - `REDIS_URL` is optional and read as is by Django's Redis cache backend: you can set it via your host (e.g. on dokku: `dokku redis:create`, then `dokku redis:link`), and it is what makes one cache shared by the `web` and `worker` processes.

@@ -39,16 +39,17 @@ class RoundInline(admin.TabularInline):
 @admin.register(Game)
 class GameAdmin(admin.ModelAdmin):
     list_display = ('id', 'display_name', 'host', 'type', 'state', 'scoring_mode',
-                    'guild', 'channel_id', 'created_at', 'finished_at')
+                    'guild', 'channel_id', 'ping_role_id', 'created_at',
+                    'finished_at')
     list_filter = ('state', 'type', 'scoring_mode')
     search_fields = ('name', 'host__username', 'host__discord_name', 'guild__name',
-                     'channel_id')
+                     'channel_id', 'ping_role_id')
     date_hierarchy = 'created_at'
     inlines = (RoundInline,)
     autocomplete_fields = ('guild', 'host')
     fieldsets = (
-        (None, {'fields': ('guild', 'channel_id', 'host', 'name', 'type', 'state',
-                           'scoring_mode')}),
+        (None, {'fields': ('guild', 'channel_id', 'ping_role_id', 'host', 'name',
+                           'type', 'state', 'scoring_mode')}),
         (_('Dates'), {'fields': ('created_at', 'finished_at')}),
     )
     readonly_fields = ('created_at',)

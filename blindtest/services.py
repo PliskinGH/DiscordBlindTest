@@ -478,9 +478,21 @@ def create_game(guild: Guild, channel_id: int | None, host_member: DiscordMember
     return game
 
 
+def game_summary(game: Game) -> dict:
+    """Return the display values naming a game and how it was set up.
+
+    Both panels start from these, so a host reads the same line whichever
+    controls they are holding.
+    """
+    return {'game_name': game.display_name,
+            'type_label': QuizType(game.type).display_name,
+            'channel_id': game.channel_id,
+            'ping_role_id': game.ping_role_id}
+
+
 def panel_data(game: Game) -> dict:
     """Return the display values the setup panel of a game shows."""
-    return {'game_id': game.pk, 'game_name': game.display_name,
+    return {**game_summary(game), 'game_id': game.pk,
             'queued': queued_count(game),
             'choices': question_choices(game),
             'queued_choices': queued_choices(game),
@@ -498,11 +510,9 @@ def publish_game(game: Game, host_member: DiscordMember) -> dict:
     game.state = Game.State.RUNNING
     game.save(update_fields=['state'])
     logger.info('Game %s published', game.pk)
-    return {'game_id': game.pk, 'game_name': game.display_name,
-            'type_label': QuizType(game.type).label.capitalize(),
-            'scoring_label': game.get_scoring_mode_display(),
+    return {**game_summary(game), 'game_id': game.pk,
+            'scoring_label': ScoringMode(game.scoring_mode).display_name,
             'queued': queued_count(game), 'created_at': game.created_at,
-            'ping_role_id': game.ping_role_id,
             'channel_id': game.channel_id}
 
 
@@ -526,8 +536,8 @@ def finish_game(game: Game, host_member: DiscordMember) -> dict:
     logger.info('Game %s finished', game.pk)
     rounds = _scored_rounds(game)
     return {'game_id': game.pk, 'game_name': game.display_name,
-            'type_label': QuizType(game.type).label.capitalize(),
-            'scoring_label': game.get_scoring_mode_display(),
+            'type_label': QuizType(game.type).display_name,
+            'scoring_label': ScoringMode(game.scoring_mode).display_name,
             'scores': game_scores(game, rounds),
             'teams': game_team_scores(game, rounds),
             'rounds': len(rounds),
@@ -658,7 +668,7 @@ def copy_questions_by_pk(game: Game, host_member: DiscordMember, source_pk: int,
 def game_option(game: Game, questions: int) -> str:
     """Return how a host picks a game to copy: its name, size and state."""
     return (f'{game.display_name} — {questions} question(s) — '
-            f'{game.get_state_display()}')
+            f'{game.State(game.state).display_name}')
 
 
 def game_choices(guild: Guild, current: Game | None = None, text: str = '',
@@ -912,8 +922,8 @@ def round_display(round_: Round) -> dict:
             'answer_text': question.answer_text,
             'expected': question.expected_answer.text,
             'type': round_.effective_type,
-            'type_label': QuizType(round_.effective_type).label.capitalize(),
-            'scoring_label': ScoringMode(round_.effective_scoring_mode).label,
+            'type_label': QuizType(round_.effective_type).display_name,
+            'scoring_label': ScoringMode(round_.effective_scoring_mode).display_name,
             'game_id': round_.game_id,
             'game_name': round_.game.display_name,
             'options': [{'pk': choice.pk, 'label': choice.text}

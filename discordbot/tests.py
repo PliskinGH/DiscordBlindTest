@@ -1044,11 +1044,72 @@ class SetupFlowTests(FlowTestCase):
         self.assertEqual(game.state, Game.State.RUNNING)
         [view] = click.original_edits
         self.assertIsInstance(view, HostPanel)
-        self.assertEqual(click.original_contents,
-                         ['Fiesta is live. Host controls:'])
+        summary, controls = click.original_contents[0].split('\n')
+        self.assertEqual(summary, f'**Fiesta** · Blind test · <#{game.channel_id}>')
+        self.assertEqual(controls, 'Next round, reveal, queue or end.')
         self.assertEqual(click.followup.sent, ['Fiesta is published.'])
         [embed] = click.channel.embeds
         self.assertEqual(embed.title, 'Fiesta')
+
+    def test_the_setup_panel_names_the_game_and_its_settings(self) -> None:
+        _cog, panel, host = self._setup()
+        summary = host.followup.sent[0].split('\n')[0]
+        game = Game.objects.get()
+        self.assertEqual(summary,
+                         f'**Fiesta** · Blind test · <#{game.channel_id}>')
+
+    def test_the_setup_panel_names_the_role_the_game_pings(self) -> None:
+        guild = self.prepare_guild()
+        services.set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).setup_game(host, 'STANDARD', 'Fiesta'))
+        summary = host.followup.sent[0].split('\n')[0]
+        self.assertIn('pings <@&99>', summary)
+
+    def test_the_host_panel_names_the_game_and_its_settings(self) -> None:
+        self.prepare_guild()
+        host = FakeInteraction()
+        cog = GameCog(create_bot())
+        asyncio.run(cog.setup_game(host, 'STANDARD', 'Fiesta'))
+        asyncio.run(cog.publish(FakeInteraction()))
+        opened = FakeInteraction()
+        asyncio.run(cog.show_panel(opened))
+        game = Game.objects.get()
+        summary = opened.followup.sent[0].split('\n')[0]
+        self.assertEqual(summary,
+                         f'**Fiesta** · Blind test · <#{game.channel_id}>')
+        self.assertIn('Next round, reveal, queue or end.',
+                      opened.followup.sent[0])
+
+    def test_a_setup_refused_over_a_prepared_game_shows_its_panel(self) -> None:
+        _cog, panel, _host = self._setup()
+        again = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).setup_game(again, 'STANDARD', 'Other'))
+        self.assertIn('being prepared', again.followup.sent[0])
+        [view] = again.followup.views
+        self.assertIsInstance(view, SetupPanel)
+
+    def test_a_setup_refused_over_a_running_game_shows_the_host_panel(self) -> None:
+        self.prepare_guild()
+        cog = GameCog(create_bot())
+        asyncio.run(cog.setup_game(FakeInteraction(), 'STANDARD', 'Fiesta'))
+        asyncio.run(cog.publish(FakeInteraction()))
+        again = FakeInteraction()
+        asyncio.run(cog.setup_game(again, 'STANDARD', 'Other'))
+        self.assertIn('already running', again.followup.sent[0])
+        [view] = again.followup.views
+        self.assertIsInstance(view, HostPanel)
+
+    def test_a_refused_setup_shows_no_panel_to_someone_who_is_not_a_host(self) -> None:
+        guild = self.prepare_guild()
+        cog = GameCog(create_bot())
+        asyncio.run(cog.setup_game(FakeInteraction(), 'STANDARD', 'Fiesta'))
+        player = FakeInteraction()
+        player.user = FakeMember(43)
+        asyncio.run(cog.setup_game(player, 'STANDARD', 'Other',
+                                   role=FakeGuild(1).role(99, position=99)))
+        self.assertTrue(all(view is None for view in player.followup.views))
+        self.assertIn('above me', player.followup.sent[0])
 
     def test_the_announcement_calls_in_the_role_of_the_game(self) -> None:
         guild = self.prepare_guild()
@@ -1447,6 +1508,8 @@ class DeferFirstTests(SimpleTestCase):
     # Autocomplete cannot be deferred: it answers with choices within 3 seconds.
     EXEMPT = {'question_autocomplete', 'queued_autocomplete',
               'game_autocomplete'}
+    # Helpers an already deferred flow calls, answering through its followup.
+    AFTER_DEFERRING = {'answer_refused_setup'}
 
     @staticmethod
     def _name(node) -> str | None:
@@ -1463,7 +1526,7 @@ class DeferFirstTests(SimpleTestCase):
             for node in ast.walk(ast.parse(getsource(module))):
                 if not isinstance(node, ast.AsyncFunctionDef):
                     continue
-                if node.name in self.EXEMPT:
+                if node.name in self.EXEMPT | self.AFTER_DEFERRING:
                     continue
                 work = self._lines(node, self.DB_CALLS)
                 if not work:

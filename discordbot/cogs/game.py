@@ -9,6 +9,7 @@ from discord.ext import commands
 
 from blindtest import services
 from blindtest.models import Game, Question, QuizType, ScoringMode
+from discordcore.models import Guild
 
 from .. import embeds
 from ..db import guild_for, player_for, run_db
@@ -107,10 +108,28 @@ def ping_text(payload: dict) -> tuple[str, list[int]]:
     return (f'<@&{role}>', [role]) if role else ('', [])
 
 
-def setup_text(data: dict) -> str:
-    """Return the line naming the game being prepared and its queue."""
-    return ('{}: {} question(s) queued. Add, drop or copy questions, then '
-            'publish.').format(data['game_name'], data['queued'])
+def summary_line(data: dict) -> str:
+    """Return the line naming a game and the settings it was set up with."""
+    parts = [f'**{data["game_name"]}**', data['type_label'],
+             f'<#{data["channel_id"]}>']
+    if data.get('ping_role_id'):
+        parts.append(f'pings <@&{data["ping_role_id"]}>')
+    return ' · '.join(parts)
+
+
+def setup_text(data: dict, lead: str = '') -> str:
+    """Return the lines naming the game being set up and its queue."""
+    return '\n'.join(filter(None, [
+        lead, summary_line(data),
+        '{} question(s) queued. Add, drop or copy questions, then '
+        'publish.'.format(data['queued'])]))
+
+
+def host_text(data: dict, lead: str = '') -> str:
+    """Return the lines naming the running game and the controls it offers."""
+    return '\n'.join(filter(None, [
+        lead, summary_line(data),
+        'Next round, reveal, queue or end.']))
 
 
 def added_text(result: dict) -> str:
@@ -400,6 +419,26 @@ class GameCog(commands.Cog):
         await self.copy_questions(interaction, source)
 
 
+    async def answer_refused_setup(self, interaction: discord.Interaction,
+                                   guild: Guild, error: Exception) -> None:
+        """Refuse a setup, beside the controls of the game already there.
+
+        The option checks run before the host check, so only a host may see the
+        panels.
+        """
+        host = await run_db(services.is_host, guild, interaction.user)
+        game = await run_db(services.active_game, guild) if host else None
+        if game is None:
+            await interaction.followup.send(str(error), ephemeral=True)
+        elif game.is_preparing:
+            await self.send_setup_panel(
+                interaction, await run_db(services.panel_data, game),
+                str(error))
+        else:
+            await self.send_panel(
+                interaction,
+                host_text(await run_db(services.game_summary, game), str(error)))
+
     async def setup_game(self, interaction: discord.Interaction, scoring: str,
                          name: str = '', quiz_type: str = '',
                          channel: GameChannel | None = None,
@@ -424,7 +463,7 @@ class GameCog(commands.Cog):
                 ephemeral=True)
             return False
         except ValueError as error:
-            await interaction.followup.send(str(error), ephemeral=True)
+            await self.answer_refused_setup(interaction, guild, error)
             return False
         except Exception:
             logger.exception('Failed to set up quiz')
@@ -444,9 +483,9 @@ class GameCog(commands.Cog):
                           data['games'])
 
     async def send_setup_panel(self, interaction: discord.Interaction,
-                               data: dict) -> None:
+                               data: dict, lead: str = '') -> None:
         """Send the caller the controls of the game being prepared."""
-        await interaction.followup.send(setup_text(data), ephemeral=True,
+        await interaction.followup.send(setup_text(data, lead), ephemeral=True,
                                         view=self.setup_view(data))
 
     async def show_panel(self, interaction: discord.Interaction) -> bool:
@@ -464,7 +503,9 @@ class GameCog(commands.Cog):
                 await self.send_setup_panel(
                     interaction, await run_db(services.panel_data, game))
             else:
-                await self.send_panel(interaction, 'Quiz controls.')
+                await self.send_panel(
+                    interaction,
+                    host_text(await run_db(services.game_summary, game)))
         except PermissionError as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -562,10 +603,9 @@ class GameCog(commands.Cog):
         text = '{} is published.'.format(result['game_name'])
         if interaction.type is discord.InteractionType.component:
             await self.respond(interaction, text, panel=HostPanel(self),
-                               content='{} is live. Host controls:'.format(
-                                   result['game_name']))
+                               content=host_text(result))
         else:
-            await interaction.followup.send(text, ephemeral=True,
+            await interaction.followup.send(host_text(result), ephemeral=True,
                                             view=HostPanel(self))
         # The game is live, so an announcement that fails must not deny it.
         ping, mentions = ping_text(result)

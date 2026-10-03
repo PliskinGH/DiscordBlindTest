@@ -2,17 +2,25 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q, UniqueConstraint, functions
 from django.utils.translation import gettext_lazy as _
+from enum import property as enum_property
 
 from .constants import DEFAULT_BLIND_TEST_PROMPT
 
+class TextChoices(models.TextChoices):
+    """A TextChoices that exposes its capitalized
+       label as a property of the value."""
 
-class ScoringMode(models.TextChoices):
+    @enum_property
+    def display_name(self):
+        return self._label_.capitalize()
+
+class ScoringMode(TextChoices):
     STANDARD = 'STANDARD', _('standard (fixed points)')
     FIRST_ONLY = 'FIRST_ONLY', _('first correct only')
     SPEED = 'SPEED', _('speed / time bonus')
 
 
-class QuizType(models.TextChoices):
+class QuizType(TextChoices):
     """How rounds are played: the game sets the type, a round may override it."""
 
     BLIND_TEST = 'BLIND_TEST', _('blind test')
@@ -135,7 +143,7 @@ def question_problem(question: Question, quiz_type: str) -> str | None:
 class Game(models.Model):
     """One quiz session, hosted by a player in a Discord channel."""
 
-    class State(models.TextChoices):
+    class State(TextChoices):
         SETUP = 'SETUP', _('being prepared')
         RUNNING = 'RUNNING', _('running')
         PAUSED = 'PAUSED', _('paused')
@@ -173,8 +181,7 @@ class Game(models.Model):
         ]
 
     def __str__(self) -> str:
-        state = self.get_state_display()
-        return f'{self.host} - {state} (#{self.pk})'
+        return f'{self.host} - {self.State(self.state).display_name} (#{self.pk})'
 
     @property
     def is_running(self) -> bool:
@@ -193,7 +200,7 @@ class Game(models.Model):
     @property
     def display_name(self) -> str:
         """Return the name of the game, defaulting to '<type> #<number>'."""
-        return self.name or f'{self.get_type_display().capitalize()} #{self.pk}'
+        return self.name or f'{QuizType(self.type).display_name} #{self.pk}'
 
 
 class Team(models.Model):

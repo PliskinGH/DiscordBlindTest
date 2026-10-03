@@ -124,6 +124,10 @@ class Guild(models.Model):
 
     discord_id = models.BigIntegerField(_('Discord guild ID'), unique=True)
     name = models.CharField(_('name'), max_length=200, blank=True)
+    default_channel_id = models.BigIntegerField(
+        _('default channel ID'), blank=True, null=True,
+        help_text=_('Where games of this server are played when the host '
+                    'names no channel.'))
     created_at = models.DateTimeField(_('created at'), auto_now_add=True)
 
     objects = GuildManager()

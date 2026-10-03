@@ -20,11 +20,33 @@ logger = logging.getLogger(__name__)
 # Answer forms primed by the rounds opened in this process.
 MAX_CACHED_FORMS = 20
 
+# The channels Discord offers for a game: any channel or thread of the server.
+GameChannel = discord.abc.GuildChannel | discord.Thread
+
 
 def game_channel(interaction: discord.Interaction,
                  game: Game) -> discord.abc.Messageable:
     """Return the channel of a game, or the invoking one when it is gone."""
-    return interaction.client.get_channel(game.channel_id) or interaction.channel
+    client = interaction.client
+    guild = interaction.guild
+    channel = (client.get_channel(game.channel_id)
+               or (guild.get_channel(game.channel_id) if guild else None))
+    return channel or interaction.channel
+
+
+def named_channel_id(interaction: discord.Interaction,
+                     channel: GameChannel | None) -> int | None:
+    """Return the ID of the channel the host named, or None when it named none.
+
+    The order of preference between the channels of a game is the domain's, in
+    ``services.target_channel_id``; this only checks that the named channel is
+    one of this server's.
+    """
+    if channel is None:
+        return None
+    if channel.guild.id != interaction.guild.id:
+        raise ValueError("That channel belongs to another server.")
+    return channel.id
 
 
 def setup_text(data: dict) -> str:
@@ -153,9 +175,10 @@ class GameCog(commands.Cog):
             logger.exception('Failed to process ping command')
             await interaction.followup.send('Failed to check database status.', ephemeral=True)
 
-    @group.command(name='start', description='Start a blind test in this channel.')
+    @group.command(name='start', description='Start a blind test in a channel.')
     @app_commands.describe(scoring='How the points are awarded.',
                            name='Name of the game, e.g. Fiesta 2026.',
+                           channel='Channel to play in.',
                            quiz_type='How the rounds are played.')
     @app_commands.choices(scoring=[
         app_commands.Choice(name=str(mode.label), value=mode.value)
@@ -164,9 +187,10 @@ class GameCog(commands.Cog):
         for kind in QuizType])
     async def start(self, interaction: discord.Interaction,
                     scoring: str = ScoringMode.STANDARD, name: str = '',
+                    channel: GameChannel | None = None,
                     quiz_type: str = QuizType.BLIND_TEST) -> None:
         """Open a game hosted by the player invoking the command."""
-        await self.start_game(interaction, scoring, name, quiz_type)
+        await self.start_game(interaction, scoring, name, quiz_type, channel)
 
     @group.command(name='panel',
                    description='Reopen the private controls of the running game.')
@@ -236,15 +260,17 @@ class GameCog(commands.Cog):
 
 
     async def start_game(self, interaction: discord.Interaction, scoring: str,
-                         name: str = '', quiz_type: str = '') -> bool:
+                         name: str = '', quiz_type: str = '',
+                         channel: GameChannel | None = None) -> bool:
         """Prepare a new game and hand its setup controls to the host."""
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
-            result = await run_db(services.prepare_result, guild,
-                                  interaction.channel_id, interaction.user,
-                                  scoring, name=name,
-                                  quiz_type=quiz_type or QuizType.BLIND_TEST)
+            channel_id = named_channel_id(interaction, channel)
+            result = await run_db(services.prepare_result, guild, channel_id,
+                                  interaction.user, scoring, name=name,
+                                  quiz_type=quiz_type or QuizType.BLIND_TEST,
+                                  invoking_id=interaction.channel_id)
             await self.send_setup_panel(interaction, result)
         except PermissionError:
             await interaction.followup.send(

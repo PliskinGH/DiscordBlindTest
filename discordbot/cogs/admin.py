@@ -1,4 +1,4 @@
-"""Slash commands guild administrators use to manage their hosts."""
+"""Slash commands guild administrators use to manage their server."""
 
 import logging
 
@@ -10,6 +10,7 @@ from blindtest import services
 from discordcore.mentions import role_mention, user_mention
 
 from ..db import guild_for, run_db
+from .game import GameChannel
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,10 @@ class AdminCog(commands.Cog):
     host = app_commands.Group(name='host',
                               description='Who may run blind tests here.',
                               parent=group)
+    channel = app_commands.Group(
+        name='channel',
+        description='Where the blind tests of this server are played.',
+        parent=group)
 
     @app_commands.default_permissions(manage_guild=True)
     @host.command(name='add',
@@ -113,6 +118,70 @@ class AdminCog(commands.Cog):
             logger.exception('Failed to list the hosts')
             await interaction.followup.send(
                 'Could not list the hosts.', ephemeral=True)
+
+    @app_commands.default_permissions(manage_guild=True)
+    @channel.command(name='set',
+                     description='Play the blind tests of this server here.')
+    @app_commands.describe(channel='Channel to play in; this one by default.')
+    async def channel_set(self, interaction: discord.Interaction,
+                          channel: GameChannel | None = None) -> None:
+        """Make a channel the default one of the server."""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            guild = await guild_for(interaction)
+            target = channel or interaction.channel
+            await run_db(services.set_default_channel, guild, target.id,
+                         interaction.user)
+            await interaction.followup.send(
+                f'Blind tests are now played in {target.mention}.', ephemeral=True)
+        except PermissionError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+        except ValueError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+        except Exception:
+            logger.exception('Failed to set the default channel')
+            await interaction.followup.send(
+                'Could not set the default channel.', ephemeral=True)
+
+    @app_commands.default_permissions(manage_guild=True)
+    @channel.command(name='clear',
+                     description='Play the blind tests where they are started.')
+    async def channel_clear(self, interaction: discord.Interaction) -> None:
+        """Drop the default channel of the server."""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            guild = await guild_for(interaction)
+            await run_db(services.clear_default_channel, guild, interaction.user)
+            await interaction.followup.send(
+                'Blind tests are now played where they are started.',
+                ephemeral=True)
+        except PermissionError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+        except Exception:
+            logger.exception('Failed to clear the default channel')
+            await interaction.followup.send(
+                'Could not clear the default channel.', ephemeral=True)
+
+    @app_commands.default_permissions(manage_guild=True)
+    @channel.command(name='show',
+                     description='Show where the blind tests of this server are played.')
+    async def channel_show(self, interaction: discord.Interaction) -> None:
+        """Report the default channel of the server."""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            guild = await guild_for(interaction)
+            channel_id = await run_db(services.default_channel_of, guild)
+            if channel_id is None:
+                await interaction.followup.send(
+                    'No default channel: a game is played where it is started.',
+                    ephemeral=True)
+                return
+            await interaction.followup.send(
+                f'Blind tests are played in <#{channel_id}>.', ephemeral=True)
+        except Exception:
+            logger.exception('Failed to show the default channel')
+            await interaction.followup.send(
+                'Could not show the default channel.', ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

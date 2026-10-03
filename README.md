@@ -49,8 +49,8 @@ python manage.py test         # test suite
 | Command | Description |
 | --- | --- |
 | `/ping` | Gateway latency and number of games in the database |
-| `/blindtest start` | Prepare a game in this channel: optional name, quiz type and scoring mode (hosts only) |
-| `/blindtest publish` | Publish the game being prepared and announce it in the channel (hosts only) |
+| `/blindtest start` | Prepare a game: optional `channel` where to play the game, plus name, quiz type and scoring mode (hosts only) |
+| `/blindtest publish` | Publish the game being prepared and announce it in its channel (hosts only) |
 | `/blindtest panel` | Reopen the private controls of the running game (hosts only) |
 | `/blindtest guess` | Submit your answer for the round in play (players) |
 | `/blindtest queue` | Queue the question of the next round, optionally played as another quiz type (hosts only) |
@@ -63,6 +63,9 @@ python manage.py test         # test suite
 | `/admin host add` | Allow a user or a role to host (server administrators) |
 | `/admin host remove` | Withdraw host rights (server administrators) |
 | `/admin host list` | Show the hosts of this server (server administrators) |
+| `/admin channel set` | Default channel for the games (server administrators) |
+| `/admin channel clear` | Clear the default channel (server administrators) |
+| `/admin channel show` | Show where games are played by default (server administrators) |
 | `/library answer add` | Register an answer in this server's library (hosts) |
 | `/library variant add` | Accept another text for an answer, e.g. `Song (Remastered)` for `Song` (hosts) |
 | `/library variant list` | Show the variants accepted for an answer (hosts) |
@@ -77,6 +80,11 @@ python manage.py test         # test suite
   - Its page lists hosts as Discord mentions — `<@123456789>` for a user, `<@&123456789>` for a role.
   - Members with the Discord "Manage Server" permission can always host, and manage the host list with `/admin host ...`.
 
+- Where a game is played is per server too:
+  - `/admin channel set` records the default channel of the server.
+  - `/blindtest start channel=...` plays that game in the named channel or thread.
+  - The current channel is the fallback in case none of these are set.
+
 - `/blindtest start` prepares a game without announcing it.
   - The host receives a private setup panel to add, drop or copy questions.
   - The panel runs the same operations as `/blindtest queue`, `/blindtest unqueue`, `/blindtest clear` and `/blindtest copy`.
@@ -88,7 +96,6 @@ python manage.py test         # test suite
   - `/blindtest panel` reopens it when Discord cleared it.
   - Every round is posted with an **Answer** button opening the answer form of the round in play.
   - The panel and the round buttons keep working after a bot restart: their state lives in the database.
-  - The answer form itself is primed per round: the first click after a reload asks for one more click before it opens.
 - Questions and answers belong to a server, or to the global library when their guild is empty:
   - The global library is defined in the Django admin only.
   - Every Discord change stays tied to the server it is made from.

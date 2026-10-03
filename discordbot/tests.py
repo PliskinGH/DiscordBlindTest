@@ -19,6 +19,7 @@ from discordcore.models import Guild, Player
 
 from . import embeds
 from .bot import create_bot
+from .cogs.admin import AdminCog
 from .cogs.game import GameCog
 from .cogs.library import LibraryCog, question_autocomplete
 from .db import guild_for, player_for, run_db
@@ -223,12 +224,35 @@ class FakeGuild:
     def __init__(self, guild_id: int, name: str = 'Server') -> None:
         self.id = guild_id
         self.name = name
+        self.channels = {}
+
+    def get_channel(self, channel_id: int):
+        """Return a channel the guild holds, when it holds one."""
+        return self.channels.get(channel_id)
+
+
+class FakeGuildChannel:
+    """Minimal stand-in for a channel of a ``discord.Guild``."""
+
+    def __init__(self, guild: FakeGuild, channel_id: int,
+                 name: str = 'quiz') -> None:
+        self.id = channel_id
+        self.name = name
+        self.guild = guild
+        self.mention = f'<#{channel_id}>'
+
+    async def send(self, content=None, *, embed=None, embeds=(), view=None):
+        """Record nothing: only the identity of the channel is under test."""
+        return FakeMessage()
 
 
 class FakeChannel:
     """Records the messages a flow posted in a channel."""
 
-    def __init__(self) -> None:
+    def __init__(self, channel_id: int = 100, name: str = 'lounge') -> None:
+        self.id = channel_id
+        self.name = name
+        self.mention = f'<#{channel_id}>'
         self.embeds = []
         self.contents = []
         self.messages = []
@@ -357,7 +381,9 @@ class BotSetupTests(SimpleTestCase):
     def test_the_cog_registers_the_documented_commands(self) -> None:
         names = asyncio.run(_slash_command_names())
         self.assertEqual(names, [
-            'admin', 'admin host', 'admin host add', 'admin host list',
+            'admin', 'admin channel', 'admin channel clear',
+            'admin channel set', 'admin channel show', 'admin host',
+            'admin host add', 'admin host list',
             'admin host remove', 'blindtest', 'blindtest clear',
             'blindtest copy', 'blindtest end', 'blindtest guess',
             'blindtest next', 'blindtest panel', 'blindtest publish',
@@ -855,6 +881,45 @@ class SetupFlowTests(FlowTestCase):
         game = Game.objects.get()
         self.assertEqual(game.state, Game.State.SETUP)
 
+    def test_the_invoking_channel_answers_when_the_guild_has_no_default(self) -> None:
+        self.prepare_guild()
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).start_game(host, 'STANDARD', 'Fiesta'))
+        self.assertEqual(Game.objects.get().channel_id, 100)
+
+    def test_the_guild_default_redirects_a_game_started_elsewhere(self) -> None:
+        guild = self.prepare_guild()
+        services.set_default_channel(guild, 555, FakeMember(42, manage_guild=True))
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).start_game(host, 'STANDARD', 'Fiesta'))
+        self.assertEqual(Game.objects.get().channel_id, 555)
+
+    def test_a_named_channel_wins_over_the_guild_default(self) -> None:
+        guild = self.prepare_guild()
+        services.set_default_channel(guild, 555, FakeMember(42, manage_guild=True))
+        channel = FakeGuildChannel(FakeGuild(1), 777, 'quiz')
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).start_game(host, 'STANDARD', 'Fiesta',
+                                                     channel=channel))
+        self.assertEqual(Game.objects.get().channel_id, 777)
+
+    def test_start_plays_in_the_channel_the_host_named(self) -> None:
+        self.prepare_guild()
+        channel = FakeGuildChannel(FakeGuild(1), 555, 'quiz')
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).start_game(host, 'STANDARD', 'Fiesta',
+                                                     channel=channel))
+        self.assertEqual(Game.objects.get().channel_id, 555)
+
+    def test_start_refuses_a_channel_of_another_server(self) -> None:
+        self.prepare_guild()
+        channel = FakeGuildChannel(FakeGuild(2), 555, 'quiz')
+        host = FakeInteraction()
+        asyncio.run(GameCog(create_bot()).start_game(host, 'STANDARD', 'Fiesta',
+                                                     channel=channel))
+        self.assertIn('another server', host.followup.sent[0])
+        self.assertEqual(Game.objects.count(), 0)
+
     def test_the_add_select_queues_the_picked_questions(self) -> None:
         question = self.question('', 'Song', 'Band')
         _cog, panel, _host = self._start()
@@ -960,6 +1025,59 @@ class SetupFlowTests(FlowTestCase):
         [view] = command.followup.views
         self.assertIsInstance(view, SetupPanel)
         self.assertIn('Fiesta', command.followup.sent[0])
+
+
+class AdminChannelTests(FlowTestCase):
+    """The administrators of a server pick the channel its games are played in."""
+
+    @staticmethod
+    def _admin_interaction() -> FakeInteraction:
+        """Return an interaction whose member may manage the server."""
+        interaction = FakeInteraction()
+        interaction.user = FakeMember(42, manage_guild=True)
+        return interaction
+
+    @staticmethod
+    def _run(command, interaction, *args, **kwargs) -> FakeInteraction:
+        """Run an admin command the way Discord would."""
+        asyncio.run(command.callback(AdminCog(create_bot()), interaction,
+                                    *args, **kwargs))
+        return interaction
+
+    def test_setting_the_default_channel_stores_the_invoking_one(self) -> None:
+        self.prepare_guild()
+        interaction = self._run(AdminCog.channel_set, self._admin_interaction())
+        self.assertEqual(Guild.objects.get().default_channel_id, 100)
+        self.assertIn('<#100>', interaction.followup.sent[0])
+
+    def test_setting_the_default_channel_stores_the_named_one(self) -> None:
+        self.prepare_guild()
+        channel = FakeGuildChannel(FakeGuild(1), 555, 'quiz')
+        self._run(AdminCog.channel_set, self._admin_interaction(), channel)
+        self.assertEqual(Guild.objects.get().default_channel_id, 555)
+
+    def test_a_member_who_is_not_an_administrator_cannot_set_it(self) -> None:
+        self.prepare_guild()
+        interaction = FakeInteraction()
+        self._run(AdminCog.channel_set, interaction)
+        self.assertIsNone(Guild.objects.get().default_channel_id)
+        self.assertIn('Only server administrators', interaction.followup.sent[0])
+
+    def test_clearing_the_default_channel_leaves_no_default(self) -> None:
+        self.prepare_guild()
+        self._run(AdminCog.channel_set, self._admin_interaction())
+        interaction = self._run(AdminCog.channel_clear, self._admin_interaction())
+        self.assertIsNone(Guild.objects.get().default_channel_id)
+        self.assertEqual(interaction.followup.sent,
+                         ['Blind tests are now played where they are started.'])
+
+    def test_showing_the_default_channel_reports_it(self) -> None:
+        self.prepare_guild()
+        interaction = self._run(AdminCog.channel_show, self._admin_interaction())
+        self.assertIn('No default channel', interaction.followup.sent[0])
+        self._run(AdminCog.channel_set, self._admin_interaction())
+        interaction = self._run(AdminCog.channel_show, self._admin_interaction())
+        self.assertIn('<#100>', interaction.followup.sent[0])
 
 
 class LibraryVariantTests(FlowTestCase):

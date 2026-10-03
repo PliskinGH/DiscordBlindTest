@@ -14,7 +14,8 @@ from django.db.models import Count, F, Max, Prefetch, Q
 from django.utils import timezone
 from django.utils.translation import gettext as _
 
-from discordcore.cache import LIST_TIMEOUT, STATE_TIMEOUT, remember
+from discordcore.cache import (LIST_TIMEOUT, STATE_TIMEOUT, forget, guild_row_key,
+                             remember)
 from discordcore.members import DiscordMember, can_manage_guild, member_mentions
 from discordcore.mentions import normalize_mention
 from discordcore.models import Guild, Host, Player
@@ -49,7 +50,7 @@ def require_admin(member: DiscordMember) -> None:
     """Raise PermissionError unless the member may manage the Discord server."""
     if not can_manage_guild(member):
         raise PermissionError(_("Only server administrators can manage the "
-                                "hosts of a server."))
+                                "settings of a server."))
 
 
 def add_host(guild: Guild, mention: str,
@@ -79,6 +80,46 @@ def hosts_of(guild: Guild) -> list[str]:
     return remember(caching.hosts_key(guild),
                     lambda: list(guild.hosts.values_list('mention', flat=True)),
                     STATE_TIMEOUT)
+
+
+def default_channel_of(guild: Guild) -> int | None:
+    """Return the channel games of the guild default to, or None."""
+    return guild.default_channel_id
+
+
+def set_default_channel(guild: Guild, channel_id: int,
+                        admin_member: DiscordMember) -> Guild:
+    """Make ``channel_id`` the channel the guild's games are played in."""
+    require_admin(admin_member)
+    guild.default_channel_id = channel_id
+    guild.save(update_fields=['default_channel_id'])
+    # The cached row would hand the next command the previous default.
+    forget(guild_row_key(guild.discord_id))
+    logger.info('%s: %s is now the default channel', guild, channel_id)
+    return guild
+
+
+def clear_default_channel(guild: Guild, admin_member: DiscordMember) -> Guild:
+    """Send the guild's games back to the channel their host used."""
+    require_admin(admin_member)
+    guild.default_channel_id = None
+    guild.save(update_fields=['default_channel_id'])
+    forget(guild_row_key(guild.discord_id))
+    logger.info('%s: default channel cleared', guild)
+    return guild
+
+
+def target_channel_id(guild: Guild, channel_id: int | None,
+                      invoking_id: int | None = None) -> int:
+    """Return the channel a game is played in, in the following order of preference.
+
+    The channel the host named, then the channel the server defaults to,
+    then the channel the command was run in.
+    """
+    for candidate in (channel_id, guild.default_channel_id, invoking_id):
+        if candidate is not None:
+            return candidate
+    raise ValueError(_("Give a channel to play this game in."))
 
 
 def add_answer(guild: Guild, host_member: DiscordMember, text: str) -> Answer:
@@ -382,19 +423,23 @@ def active_game(guild: Guild) -> Game | None:
             .exclude(state=Game.State.FINISHED).first())
 
 
-def start_game(guild: Guild, channel_id: int, host_member: DiscordMember,
+def start_game(guild: Guild, channel_id: int | None, host_member: DiscordMember,
                scoring_mode: str = ScoringMode.STANDARD, *,
                name: str = '', quiz_type: str = QuizType.BLIND_TEST,
-               state: str = Game.State.RUNNING) -> Game:
+               state: str = Game.State.RUNNING,
+               invoking_id: int | None = None) -> Game:
     """Start a game in a channel of ``guild``, hosted by ``host_member``.
 
     The player row of the host is created when missing and recorded on the game.
+    The game is played in the channel the host named, then in the guild's
+    default channel, then in the one the host started it from.
     """
     require_host(guild, host_member)
     if scoring_mode not in ScoringMode.values:
         raise ValueError(_("Unknown scoring mode."))
     if quiz_type not in QuizType.values:
         raise ValueError(_("Unknown quiz type."))
+    target_id = target_channel_id(guild, channel_id, invoking_id)
     active = active_game(guild)
     if active is not None:
         if active.is_preparing:
@@ -402,7 +447,7 @@ def start_game(guild: Guild, channel_id: int, host_member: DiscordMember,
                                "with /blindtest publish, or end it first.")
                              % {'name': active.display_name})
         raise ValueError(_("A blind test is already running in this server."))
-    game = Game.objects.create(guild=guild, channel_id=channel_id,
+    game = Game.objects.create(guild=guild, channel_id=target_id,
                                host=Player.objects.from_discord(host_member),
                                scoring_mode=scoring_mode, name=name.strip(),
                                type=quiz_type, state=state)
@@ -418,12 +463,15 @@ def panel_data(game: Game) -> dict:
             'games': game_choices(game.guild, game)}
 
 
-def prepare_result(guild: Guild, channel_id: int, host_member: DiscordMember,
+def prepare_result(guild: Guild, channel_id: int | None,
+                   host_member: DiscordMember,
                    scoring_mode: str = ScoringMode.STANDARD, *,
-                   name: str = '', quiz_type: str = QuizType.BLIND_TEST) -> dict:
+                   name: str = '', quiz_type: str = QuizType.BLIND_TEST,
+                   invoking_id: int | None = None) -> dict:
     """Create a game that is not published yet, and return what it shows."""
     game = start_game(guild, channel_id, host_member, scoring_mode, name=name,
-                      quiz_type=quiz_type, state=Game.State.SETUP)
+                      quiz_type=quiz_type, state=Game.State.SETUP,
+                      invoking_id=invoking_id)
     data = {'game_id': game.pk,
             'type_label': QuizType(game.type).label.capitalize(),
             'scoring_label': game.get_scoring_mode_display(),

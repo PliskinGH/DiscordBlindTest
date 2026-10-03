@@ -34,6 +34,14 @@ class FakePermissions:
         self.manage_guild = manage_guild
 
 
+class FakeGuild:
+    """Minimal stand-in for a ``discord.Guild``."""
+
+    def __init__(self, guild_id: int, name: str = 'Server') -> None:
+        self.id = guild_id
+        self.name = name
+
+
 class FakeMember:
     """Minimal stand-in for a ``discord.Member``."""
 
@@ -150,6 +158,72 @@ class GameTests(GameTestCase):
         self.start_game()
         with self.assertRaises(ProtectedError):
             self.guild.delete()
+
+    def test_a_game_without_a_channel_follows_the_guild_default(self):
+        services.set_default_channel(self.guild, 555, self.admin)
+        game = services.start_game(self.guild, None, self.host,
+                                   invoking_id=100)
+        self.assertEqual(game.channel_id, 555)
+
+    def test_the_guild_default_wins_over_the_invoking_channel(self):
+        services.set_default_channel(self.guild, 555, self.admin)
+        game = services.start_game(self.guild, None, self.host,
+                                   invoking_id=100)
+        self.assertEqual(game.channel_id, 555)
+
+    def test_a_game_channel_wins_over_the_guild_default(self):
+        services.set_default_channel(self.guild, 555, self.admin)
+        game = services.start_game(self.guild, 777, self.host, invoking_id=100)
+        self.assertEqual(game.channel_id, 777)
+
+    def test_the_invoking_channel_answers_when_nothing_else_is_known(self):
+        game = services.start_game(self.guild, None, self.host, invoking_id=100)
+        self.assertEqual(game.channel_id, 100)
+
+    def test_a_game_needs_a_channel_guild_default_or_invoking_channel(self):
+        with self.assertRaises(ValueError):
+            services.start_game(self.guild, None, self.host)
+
+
+class DefaultChannelTests(GameTestCase):
+    def test_a_guild_starts_without_a_default_channel(self):
+        self.assertIsNone(services.default_channel_of(self.guild))
+
+    def test_an_administrator_sets_the_default_channel(self):
+        services.set_default_channel(self.guild, 555, self.admin)
+        self.assertEqual(services.default_channel_of(self.guild), 555)
+        self.assertEqual(
+            Guild.objects.get(pk=self.guild.pk).default_channel_id, 555)
+
+    def test_only_administrators_set_the_default_channel(self):
+        with self.assertRaises(PermissionError):
+            services.set_default_channel(self.guild, 555, self.host)
+        self.assertIsNone(services.default_channel_of(self.guild))
+
+    def test_only_administrators_clear_the_default_channel(self):
+        services.set_default_channel(self.guild, 555, self.admin)
+        with self.assertRaises(PermissionError):
+            services.clear_default_channel(self.guild, self.host)
+        self.assertEqual(services.default_channel_of(self.guild), 555)
+
+    def test_clearing_sends_the_games_back_to_their_own_channel(self):
+        services.set_default_channel(self.guild, 555, self.admin)
+        services.clear_default_channel(self.guild, self.admin)
+        self.assertIsNone(services.default_channel_of(self.guild))
+        game = services.start_game(self.guild, 100, self.host)
+        self.assertEqual(game.channel_id, 100)
+
+    def test_the_default_is_read_from_the_database_after_a_cached_read(self):
+        Guild.objects.from_discord(FakeGuild(1, 'Server'))
+        services.set_default_channel(self.guild, 555, self.admin)
+        self.assertEqual(
+            Guild.objects.from_discord(FakeGuild(1, 'Server')).default_channel_id,
+            555)
+
+    def test_the_default_of_a_guild_is_its_own(self):
+        services.set_default_channel(self.guild, 555, self.admin)
+        self.assertIsNone(services.default_channel_of(self.other_guild))
+
 
 class RoundTests(GameTestCase):
     def setUp(self):

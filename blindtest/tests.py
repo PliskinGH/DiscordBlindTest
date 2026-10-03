@@ -1491,6 +1491,17 @@ class CacheTests(GameTestCase):
         with self.assertNumQueries(0):
             self.assertEqual(len(services.game_choices(self.guild)), 1)
 
+    def test_the_queue_of_a_game_is_not_read_for_another_game(self):
+        # A finished game clears the one-active-game constraint of the guild.
+        other = services.create_game(self.guild, 100, self.host,
+                                     state=Game.State.FINISHED)
+        queued = self.create_game()
+        services.create_round(queued, self.host, self.question, index=1)
+        services.queued_choices(queued)
+        self.assertEqual(services.queued_choices(other), [])
+        offered = [choice['pk'] for choice in services.question_choices(other)]
+        self.assertIn(self.question.pk, offered)
+
     def test_a_library_too_large_to_cache_falls_back_to_the_database(self):
         game = self.create_game()
         with mock.patch.object(caching, 'LIBRARY_CACHE_LIMIT', 1):

@@ -6,7 +6,7 @@ from django.dispatch import receiver
 
 from discordcore.cache import bump, guild_scope
 
-from .caching import library_scope, rounds_scope
+from .caching import game_scope, library_scope, rounds_scope
 from .models import Answer, AnswerVariant, Game, Question, Round
 
 
@@ -42,6 +42,7 @@ def _variant_changed(sender, instance, **kwargs) -> None:
 @receiver(post_delete, sender=Round)
 def _round_changed(sender, instance, **kwargs) -> None:
     """Drop the queue and game lists of the guild the round is played in."""
+    _after_commit(bump, game_scope(instance.game_id))
     guild_id = (Game.objects.filter(pk=instance.game_id)
                 .values_list('guild_id', flat=True).first())
     if guild_id is not None:

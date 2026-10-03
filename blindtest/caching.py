@@ -27,6 +27,11 @@ def rounds_scope(guild_id: int) -> str:
     return f'rounds:{guild_id}'
 
 
+def game_scope(game_id: int) -> str:
+    """Return the scope of the queue of one game."""
+    return f'game:{game_id}'
+
+
 def hosts_key(guild: Guild) -> str:
     """Return the key of the host mentions of a guild."""
     return scoped('bt:hosts', guild_scope(guild.pk))
@@ -39,12 +44,12 @@ def library_options_key(guild: Guild) -> str:
 
 def used_questions_key(game: Game) -> str:
     """Return the key of the questions a game already queued or played."""
-    return scoped('bt:used', rounds_scope(game.guild_id))
+    return scoped('bt:used', game_scope(game.pk))
 
 
 def queued_options_key(game: Game) -> str:
     """Return the key of the rendered options of the rounds a game queued."""
-    return scoped('bt:queued', rounds_scope(game.guild_id),
+    return scoped('bt:queued', game_scope(game.pk),
                   library_scope(game.guild_id), library_scope(None))
 
 

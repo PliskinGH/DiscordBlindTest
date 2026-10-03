@@ -94,20 +94,11 @@ def fit_all(embeds: Iterable[discord.Embed],
 
 async def post(channel: discord.abc.Messageable, *, content: str | None = None,
                embeds: Iterable[discord.Embed] = (),
-               view: discord.ui.View | None = None,
-               mentions: Iterable[int] = ()) -> discord.Message:
-    """Send a public message Discord accepts, whatever it holds.
-
-    ``mentions`` names the roles ``content`` may ping, so no message can
-    reach a role it was not built for.
-    """
-    fitted = fit_all(embeds)
-    extra = {'view': view} if view is not None else {}
-    if mentions:
-        extra['allowed_mentions'] = discord.AllowedMentions(roles=list(mentions))
+               view: discord.ui.View | None = None) -> discord.Message:
+    """Send a public message Discord accepts, whatever it holds."""
     return await channel.send(
         clip(content, CONTENT_LIMIT) if content else None,
-        embeds=fitted, **extra)
+        embeds=fit_all(embeds), view=view)
 
 
 def icon(quiz_type: str) -> str:

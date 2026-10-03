@@ -93,7 +93,7 @@ python manage.py test         # test suite
 - The channel the game is played in can be configured:
   - `/admin channel set` records the default channel of the server.
   - `/quiz setup channel=...` plays that game in the named channel or thread.
-  - The current interaaction channel is the fallback in case none of these are set.
+  - The current interaction channel is the fallback in case none of these are set.
 
 - Same for the role that would be pinged whenever the game is published and at the start of every round:
   - `/admin ping set` records the default role to ping on the server.

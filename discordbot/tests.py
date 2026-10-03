@@ -1120,15 +1120,11 @@ class SetupFlowTests(FlowTestCase):
         click = FakeInteraction(InteractionType.component)
         asyncio.run(cog.publish(click))
         self.assertEqual(click.channel.contents, ['<@&99>'])
-        self.assertEqual([mentions.roles for mentions in
-                          click.channel.allowed_mentions if mentions],
-                         [[99]])
 
     def test_the_announcement_of_a_silent_game_calls_nobody_in(self) -> None:
         _cog, panel, _host = self._setup()
         click = self._click(self._control(panel, SETUP_PUBLISH_ID))
         self.assertEqual(click.channel.contents, [None])
-        self.assertEqual(click.channel.allowed_mentions, [None])
 
     def test_a_round_calls_in_the_role_of_the_game(self) -> None:
         guild = self.prepare_guild()
@@ -1140,8 +1136,6 @@ class SetupFlowTests(FlowTestCase):
         opened = FakeInteraction()
         asyncio.run(cog.open_next_round(opened))
         self.assertEqual(opened.channel.contents, ['<@&99>'])
-        self.assertEqual([mentions.roles for mentions in
-                          opened.channel.allowed_mentions if mentions], [[99]])
 
     def test_a_round_of_a_silent_game_calls_nobody_in(self) -> None:
         guild = self.prepare_guild()
@@ -1152,7 +1146,6 @@ class SetupFlowTests(FlowTestCase):
         opened = FakeInteraction()
         asyncio.run(cog.open_next_round(opened))
         self.assertEqual(opened.channel.contents, [None])
-        self.assertEqual(opened.channel.allowed_mentions, [None])
 
     def test_publishing_twice_is_reported(self) -> None:
         _cog, panel, _host = self._setup()

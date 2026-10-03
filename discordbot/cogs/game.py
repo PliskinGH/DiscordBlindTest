@@ -102,10 +102,10 @@ def named_ping_role_id(interaction: discord.Interaction,
     return role.id
 
 
-def ping_text(payload: dict) -> tuple[str, list[int]]:
+def ping_text(payload: dict) -> str:
     """Return the role ping formatted for discord."""
     role = payload.get('ping_role_id')
-    return (f'<@&{role}>', [role]) if role else ('', [])
+    return f'<@&{role}>' if role else ''
 
 
 def summary_line(data: dict) -> str:
@@ -608,12 +608,11 @@ class GameCog(commands.Cog):
             await interaction.followup.send(host_text(result), ephemeral=True,
                                             view=HostPanel(self))
         # The game is live, so an announcement that fails must not deny it.
-        ping, mentions = ping_text(result)
+        ping = ping_text(result)
         try:
             await embeds.post(game_channel(interaction, game), content=ping,
                               embeds=[embeds.announce_embed(
-                                  result, interaction.user.mention)],
-                              mentions=mentions)
+                                  result, interaction.user.mention)])
         except Exception:
             logger.exception('Failed to post the announcement')
             await interaction.followup.send(
@@ -631,11 +630,11 @@ class GameCog(commands.Cog):
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result = await run_db(services.start_round, game, interaction.user)
-            ping, mentions = ping_text(result)
+            ping = ping_text(result)
             message = await embeds.post(game_channel(interaction, game),
                                         content=ping,
                                         embeds=[embeds.round_embed(result)],
-                                        view=GamePanel(self), mentions=mentions)
+                                        view=GamePanel(self))
             self.cache_form(message.id, result['form'])
             await interaction.followup.send(
                 round_note('Round {} opened: {}.'.format(

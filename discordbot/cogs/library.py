@@ -143,7 +143,7 @@ class LibraryCog(commands.Cog):
                            answer: str, artist: str = '', prompt: str = '',
                            choices: str = '', year: int | None = None,
                            album: str = '', media: str = '') -> None:
-        """Create a blind test question tied to this server."""
+        """Create a quiz question tied to this server."""
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)

@@ -1,4 +1,4 @@
-"""Slash commands and the operations behind the controls of a blind test."""
+"""Slash commands and the operations behind the controls of a quiz."""
 
 import logging
 from collections import OrderedDict
@@ -22,6 +22,32 @@ MAX_CACHED_FORMS = 20
 
 # The channels Discord offers for a game: any channel or thread of the server.
 GameChannel = discord.abc.GuildChannel | discord.Thread
+
+# Said wherever a command needs the game of the server and finds none.
+NO_QUIZ_RUNNING = 'No quiz is running in this server.'
+
+# Descriptions both groups share; only setup, queue and next differ.
+PUBLISH_DESCRIPTION = 'Publish the game being prepared.'
+PANEL_DESCRIPTION = 'Reopen the private controls of the running game.'
+GUESS_DESCRIPTION = 'Submit your answer for the round in play.'
+END_DESCRIPTION = 'End the quiz of this server.'
+REVEAL_DESCRIPTION = 'Reveal the current round.'
+UNQUEUE_DESCRIPTION = 'Drop a question queued for a round.'
+CLEAR_DESCRIPTION = 'Drop every queued question of the game.'
+COPY_DESCRIPTION = 'Queue the questions another game was played with.'
+
+# Options the two commands of a subcommand share. The ones that name a quiz
+# type add it on top, since only the quiz group offers it.
+SETUP_OPTIONS = {'scoring': 'How the points are awarded.',
+                 'name': 'Name of the game, e.g. Blind Test 2026.',
+                 'channel': 'Channel to play in.',
+                 'role': 'Role to ping.'}
+GUESS_OPTIONS = {'answer': 'Your answer, e.g. the music title.',
+                 'secondary_answer': 'Artist for blind tests, or '
+                                     'secondary required answer.'}
+QUEUE_OPTIONS = {'question': 'Question to play next.'}
+UNQUEUE_OPTIONS = {'question': 'Queued question to drop.'}
+COPY_OPTIONS = {'source': 'Game to copy the questions from.'}
 
 
 def game_channel(interaction: discord.Interaction,
@@ -190,10 +216,14 @@ class GameCog(commands.Cog):
         else:
             await interaction.response.defer(ephemeral=True, thinking=True)
 
-    group = app_commands.Group(name='blindtest', description='Run a blind test.')
+    # The generic command group, and the legacy name kept as its alias: the same
+    # subcommands, except the two naming a quiz type, which fix it to a blind test.
+    quiz = app_commands.Group(name='quiz', description='Run a quiz.')
+    blindtest = app_commands.Group(name='blindtest',
+                                   description='Run a blind test quiz.')
 
     @app_commands.command(name='ping', description='Check the bot and its database.')
-    async def ping(self, interaction: discord.Interaction) -> None:
+    async def ping_command(self, interaction: discord.Interaction) -> None:
         """Report the gateway latency and the number of games in this server."""
         await self.defer(interaction)
         try:
@@ -207,90 +237,167 @@ class GameCog(commands.Cog):
             logger.exception('Failed to process ping command')
             await interaction.followup.send('Failed to check database status.', ephemeral=True)
 
-    @group.command(name='setup', description='Set up a blind test in a channel.')
-    @app_commands.describe(scoring='How the points are awarded.',
-                           name='Name of the game, e.g. Fiesta 2026.',
-                           channel='Channel to play in.',
-                           role='Role to ping.',
+    @quiz.command(name='setup', description='Set up a quiz in a channel.')
+    @app_commands.describe(**SETUP_OPTIONS,
                            quiz_type='How the rounds are played.')
     @app_commands.choices(scoring=[
         app_commands.Choice(name=str(mode.label), value=mode.value)
         for mode in ScoringMode], quiz_type=[
         app_commands.Choice(name=str(kind.label), value=kind.value)
         for kind in QuizType])
-    async def setup(self, interaction: discord.Interaction,
-                    scoring: str = ScoringMode.STANDARD, name: str = '',
-                    channel: GameChannel | None = None,
-                    role: discord.Role | None = None,
-                    quiz_type: str = QuizType.BLIND_TEST) -> None:
+    async def quiz_setup_command(self, interaction: discord.Interaction,
+                                 scoring: str = ScoringMode.STANDARD,
+                                 name: str = '',
+                                 channel: GameChannel | None = None,
+                                 role: discord.Role | None = None,
+                                 quiz_type: str = QuizType.BLIND_TEST) -> None:
         """Open a game to be set up, hosted by the player invoking the command."""
         await self.setup_game(interaction, scoring, name, quiz_type, channel, role)
 
-    @group.command(name='panel',
-                   description='Reopen the private controls of the running game.')
-    async def panel(self, interaction: discord.Interaction) -> None:
+    @blindtest.command(name='setup',
+                       description='Set up a blind test quiz in a channel.')
+    @app_commands.describe(**SETUP_OPTIONS)
+    @app_commands.choices(scoring=[
+        app_commands.Choice(name=str(mode.label), value=mode.value)
+        for mode in ScoringMode])
+    async def blindtest_setup_command(self, interaction: discord.Interaction,
+                                      scoring: str = ScoringMode.STANDARD,
+                                      name: str = '',
+                                      channel: GameChannel | None = None,
+                                      role: discord.Role | None = None) -> None:
+        """Open a game to be set up, always played as a blind test."""
+        await self.setup_game(interaction, scoring, name, QuizType.BLIND_TEST,
+                              channel, role)
+
+    @quiz.command(name='publish', description=PUBLISH_DESCRIPTION)
+    async def quiz_publish_command(self, interaction: discord.Interaction) -> None:
+        """Publish the game the host prepared."""
+        await self.publish(interaction)
+
+    @blindtest.command(name='publish', description=PUBLISH_DESCRIPTION)
+    async def blindtest_publish_command(self,
+                                        interaction: discord.Interaction) -> None:
+        """Publish the game the host prepared."""
+        await self.publish(interaction)
+
+    @quiz.command(name='panel', description=PANEL_DESCRIPTION)
+    async def quiz_panel_command(self, interaction: discord.Interaction) -> None:
         """Send the host panel of the running game again."""
         await self.show_panel(interaction)
 
-    @group.command(name='guess', description='Submit your answer for the round in play.')
-    @app_commands.describe(answer='Your answer, e.g. the song title.',
-                           secondary_answer='Artist for blind tests, or '
-                                            'secondary required answer.')
-    async def guess(self, interaction: discord.Interaction, answer: str,
-                    secondary_answer: str = '') -> None:
+    @blindtest.command(name='panel', description=PANEL_DESCRIPTION)
+    async def blindtest_panel_command(self, interaction: discord.Interaction) -> None:
+        """Send the host panel of the running game again."""
+        await self.show_panel(interaction)
+
+    @quiz.command(name='guess', description=GUESS_DESCRIPTION)
+    @app_commands.describe(**GUESS_OPTIONS)
+    async def quiz_guess_command(self, interaction: discord.Interaction,
+                                 answer: str, secondary_answer: str = '') -> None:
         """Record the answer of the player invoking the command."""
         await self.record_guess(interaction, answer, secondary_answer)
 
-    @group.command(name='end', description='End the blind test of this server.')
-    async def end(self, interaction: discord.Interaction) -> None:
+    @blindtest.command(name='guess', description=GUESS_DESCRIPTION)
+    @app_commands.describe(**GUESS_OPTIONS)
+    async def blindtest_guess_command(self, interaction: discord.Interaction,
+                                      answer: str,
+                                      secondary_answer: str = '') -> None:
+        """Record the answer of the player invoking the command."""
+        await self.record_guess(interaction, answer, secondary_answer)
+
+    @quiz.command(name='end', description=END_DESCRIPTION)
+    async def quiz_end_command(self, interaction: discord.Interaction) -> None:
         """Close the running game and publish the final scores."""
         await self.end_game(interaction)
 
-    @group.command(name='next', description='Open the next round of the blind test.')
-    async def next_round(self, interaction: discord.Interaction) -> None:
+    @blindtest.command(name='end', description=END_DESCRIPTION)
+    async def blindtest_end_command(self, interaction: discord.Interaction) -> None:
+        """Close the running game and publish the final scores."""
+        await self.end_game(interaction)
+
+    @quiz.command(name='next', description='Open the next round of the quiz.')
+    async def quiz_next_command(self, interaction: discord.Interaction) -> None:
         """Open the next round, starting a queued one or drawing a question."""
         await self.open_next_round(interaction)
 
-    @group.command(name='reveal', description='Reveal the current round.')
-    async def reveal(self, interaction: discord.Interaction) -> None:
+    @blindtest.command(name='next',
+                       description='Open the next round of the blind test.')
+    async def blindtest_next_command(self,
+                                     interaction: discord.Interaction) -> None:
+        """Open the next round, starting a queued one or drawing a question."""
+        await self.open_next_round(interaction)
+
+    @quiz.command(name='reveal', description=REVEAL_DESCRIPTION)
+    async def quiz_reveal_command(self, interaction: discord.Interaction) -> None:
         """Close the round and publish its answer with the standings."""
         await self.reveal_round(interaction)
 
-    @group.command(name='queue', description='Queue a question for the next round.')
+    @blindtest.command(name='reveal', description=REVEAL_DESCRIPTION)
+    async def blindtest_reveal_command(self,
+                                       interaction: discord.Interaction) -> None:
+        """Close the round and publish its answer with the standings."""
+        await self.reveal_round(interaction)
+
+    @quiz.command(name='queue', description='Queue a question for the next round.')
     @app_commands.describe(
-        question='Question to play next.',
+        **QUEUE_OPTIONS,
         quiz_type='BLIND_TEST, OPEN or MULTIPLE_CHOICE; defaults to the game type.')
     @app_commands.autocomplete(question=question_autocomplete)
-    async def queue(self, interaction: discord.Interaction, question: str,
-                    quiz_type: str = '') -> None:
+    async def quiz_queue_command(self, interaction: discord.Interaction,
+                                 question: str, quiz_type: str = '') -> None:
         """Pre-select the question of the next round."""
         await self.queue_question(interaction, question, quiz_type)
 
-    @group.command(name='unqueue', description='Drop a question queued for a round.')
-    @app_commands.describe(question='Queued question to drop.')
+    @blindtest.command(name='queue',
+                       description='Queue a blind test question for the next round.')
+    @app_commands.describe(**QUEUE_OPTIONS)
+    @app_commands.autocomplete(question=question_autocomplete)
+    async def blindtest_queue_command(self, interaction: discord.Interaction,
+                                      question: str) -> None:
+        """Pre-select the question of the next round, as a blind test."""
+        await self.queue_question(interaction, question, QuizType.BLIND_TEST)
+
+    @quiz.command(name='unqueue', description=UNQUEUE_DESCRIPTION)
+    @app_commands.describe(**UNQUEUE_OPTIONS)
     @app_commands.autocomplete(question=queued_autocomplete)
-    async def unqueue(self, interaction: discord.Interaction, question: str) -> None:
+    async def quiz_unqueue_command(self, interaction: discord.Interaction,
+                                   question: str) -> None:
         """Drop a queued question of the game."""
         await self.unqueue_question(interaction, question)
 
-    @group.command(name='clear', description='Drop every queued question of the game.')
-    async def clear_command(self, interaction: discord.Interaction) -> None:
+    @blindtest.command(name='unqueue', description=UNQUEUE_DESCRIPTION)
+    @app_commands.describe(**UNQUEUE_OPTIONS)
+    @app_commands.autocomplete(question=queued_autocomplete)
+    async def blindtest_unqueue_command(self, interaction: discord.Interaction,
+                                        question: str) -> None:
+        """Drop a queued question of the game."""
+        await self.unqueue_question(interaction, question)
+
+    @quiz.command(name='clear', description=CLEAR_DESCRIPTION)
+    async def quiz_clear_command(self, interaction: discord.Interaction) -> None:
         """Empty the queue of the game."""
         await self.clear(interaction)
 
-    @group.command(name='copy',
-                   description='Queue the questions another game was played with.')
-    @app_commands.describe(source='Game to copy the questions from.')
+    @blindtest.command(name='clear', description=CLEAR_DESCRIPTION)
+    async def blindtest_clear_command(self, interaction: discord.Interaction) -> None:
+        """Empty the queue of the game."""
+        await self.clear(interaction)
+
+    @quiz.command(name='copy', description=COPY_DESCRIPTION)
+    @app_commands.describe(**COPY_OPTIONS)
     @app_commands.autocomplete(source=game_autocomplete)
-    async def copy_command(self, interaction: discord.Interaction,
-                           source: str) -> None:
+    async def quiz_copy_command(self, interaction: discord.Interaction,
+                                source: str) -> None:
         """Queue the questions of another game."""
         await self.copy_questions(interaction, source)
 
-    @group.command(name='publish', description='Publish the game being prepared.')
-    async def publish_command(self, interaction: discord.Interaction) -> None:
-        """Publish the game the host prepared."""
-        await self.publish(interaction)
+    @blindtest.command(name='copy', description=COPY_DESCRIPTION)
+    @app_commands.describe(**COPY_OPTIONS)
+    @app_commands.autocomplete(source=game_autocomplete)
+    async def blindtest_copy_command(self, interaction: discord.Interaction,
+                                     source: str) -> None:
+        """Queue the questions of another game."""
+        await self.copy_questions(interaction, source)
 
 
     async def setup_game(self, interaction: discord.Interaction, scoring: str,
@@ -313,16 +420,16 @@ class GameCog(commands.Cog):
             await self.send_setup_panel(interaction, data)
         except PermissionError:
             await interaction.followup.send(
-                'Only hosts of this server can set up a blind test.',
+                'Only hosts of this server can set up a quiz.',
                 ephemeral=True)
             return False
         except ValueError as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
         except Exception:
-            logger.exception('Failed to set up blind test')
+            logger.exception('Failed to set up quiz')
             await interaction.followup.send(
-                'Could not set up the blind test (a game may already be running '
+                'Could not set up the quiz (a game may already be running '
                 'in this server).', ephemeral=True)
             return False
         return True
@@ -351,13 +458,13 @@ class GameCog(commands.Cog):
             game = await run_db(services.active_game, guild)
             if game is None:
                 await interaction.followup.send(
-                    'No blind test is running in this server.', ephemeral=True)
+                    NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             if game.is_preparing:
                 await self.send_setup_panel(
                     interaction, await run_db(services.panel_data, game))
             else:
-                await self.send_panel(interaction, 'Blind test controls.')
+                await self.send_panel(interaction, 'Quiz controls.')
         except PermissionError as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -378,7 +485,7 @@ class GameCog(commands.Cog):
             game = await run_db(services.active_game, guild)
             if game is None:
                 await interaction.followup.send(
-                    'No blind test is running in this server.', ephemeral=True)
+                    NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result = await run_db(operation, game, interaction.user, *args)
             data = await run_db(services.panel_data, game)
@@ -386,9 +493,9 @@ class GameCog(commands.Cog):
             await interaction.followup.send(str(error), ephemeral=True)
             return False
         except Exception:
-            logger.exception('Failed to update the blind test')
+            logger.exception('Failed to update the quiz')
             await interaction.followup.send(
-                'Could not update the blind test.', ephemeral=True)
+                'Could not update the quiz.', ephemeral=True)
             return False
         if game.is_preparing:
             await self.respond(interaction, text_of(result),
@@ -441,16 +548,16 @@ class GameCog(commands.Cog):
             game = await run_db(services.active_game, guild)
             if game is None:
                 await interaction.followup.send(
-                    'No blind test is running in this server.', ephemeral=True)
+                    NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result = await run_db(services.publish_game, game, interaction.user)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
         except Exception:
-            logger.exception('Failed to publish the blind test')
+            logger.exception('Failed to publish the quiz')
             await interaction.followup.send(
-                'Could not publish the blind test.', ephemeral=True)
+                'Could not publish the quiz.', ephemeral=True)
             return False
         text = '{} is published.'.format(result['game_name'])
         if interaction.type is discord.InteractionType.component:
@@ -481,7 +588,7 @@ class GameCog(commands.Cog):
             game = await run_db(services.active_game, guild)
             if game is None:
                 await interaction.followup.send(
-                    'No blind test is running in this server.', ephemeral=True)
+                    NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result = await run_db(services.start_round, game, interaction.user)
             ping, mentions = ping_text(result)
@@ -512,7 +619,7 @@ class GameCog(commands.Cog):
             game = await run_db(services.active_game, guild)
             if game is None:
                 await interaction.followup.send(
-                    'No blind test is running in this server.', ephemeral=True)
+                    NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             round_ = await run_db(services.current_round, game)
             if round_ is None:
@@ -558,7 +665,7 @@ class GameCog(commands.Cog):
             game = await run_db(services.active_game, guild)
             if game is None:
                 await interaction.followup.send(
-                    'No blind test is running in this server.', ephemeral=True)
+                    NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             choices = await run_db(services.question_choices, game)
             if not choices:
@@ -588,7 +695,7 @@ class GameCog(commands.Cog):
             game = await run_db(services.active_game, guild)
             if game is None:
                 await interaction.followup.send(
-                    'No blind test is running in this server.', ephemeral=True)
+                    NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             if not question.isdigit():
                 await interaction.followup.send(
@@ -636,7 +743,7 @@ class GameCog(commands.Cog):
             game = await run_db(services.active_game, guild)
             if game is None:
                 await self.respond(
-                    interaction, 'No blind test is running in this server.',
+                    interaction, NO_QUIZ_RUNNING,
                     closed=True)
                 return False
             announced = not game.is_preparing
@@ -650,11 +757,11 @@ class GameCog(commands.Cog):
                 return True
         except PermissionError:
             await self.respond(
-                interaction, 'Only hosts of this server can end the blind test.')
+                interaction, 'Only hosts of this server can end the quiz.')
             return False
         except Exception:
-            logger.exception('Failed to end the blind test')
-            await self.respond(interaction, 'Could not end the blind test.')
+            logger.exception('Failed to end the quiz')
+            await self.respond(interaction, 'Could not end the quiz.')
             return False
         # The game is over, so a post that fails must not deny it.
         await self.respond(interaction, f'{result["game_name"]} ended.', closed=True)
@@ -755,7 +862,7 @@ class GameCog(commands.Cog):
             game = await run_db(services.active_game, guild)
             if game is None:
                 await interaction.followup.send(
-                    'No blind test is running in this server.', ephemeral=True)
+                    NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             round_ = await run_db(services.current_round, game)
             if round_ is None:

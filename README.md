@@ -1,6 +1,6 @@
 # DiscordBlindTest
 
-Django backend and discord.py bot running a blind test (music quiz) on Discord.
+Django backend and discord.py bot running a quiz (e.g. blind test) on Discord.
 
 ## Requirements
 
@@ -13,7 +13,7 @@ Django backend and discord.py bot running a blind test (music quiz) on Discord.
 ```sh
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
-cp .env.example .env          # Windows: copy .env.example .env
+cp .env.example .env
 python manage.py migrate
 python manage.py createsuperuser
 ```
@@ -49,17 +49,17 @@ python manage.py test         # test suite
 | Command | Description |
 | --- | --- |
 | `/ping` | Gateway latency and number of games in the database |
-| `/blindtest setup` | Set up a game: optional `channel` where to play the game and `role` to ping, plus name, quiz type and scoring mode (hosts only) |
-| `/blindtest publish` | Publish the game being prepared and announce it in its channel (hosts only) |
-| `/blindtest panel` | Reopen the private controls of the running game (hosts only) |
-| `/blindtest guess` | Submit your answer for the round in play (players) |
-| `/blindtest queue` | Queue the question of the next round, optionally played as another quiz type (hosts only) |
-| `/blindtest unqueue` | Drop a question queued for a round (hosts only) |
-| `/blindtest clear` | Drop every queued question of the game (hosts only) |
-| `/blindtest copy` | Queue the questions another game was played with (hosts only) |
-| `/blindtest next` | Open the next round: the queued question or a drawn one (hosts only) |
-| `/blindtest reveal` | Reveal the current round and publish the standings (hosts only) |
-| `/blindtest end` | End the game of this server, revealing the round left open before the final scores. A game still being prepared closes without a recap (hosts only) |
+| `/quiz setup` | Set up a game: optional `channel` where to play the game and `role` to ping, plus name, quiz type and scoring mode (hosts only) |
+| `/quiz publish` | Publish the game being prepared and announce it in its channel (hosts only) |
+| `/quiz panel` | Reopen the private controls of the running game (hosts only) |
+| `/quiz guess` | Submit your answer for the round in play (players) |
+| `/quiz queue` | Queue the question of the next round, optionally played as another quiz type (hosts only) |
+| `/quiz unqueue` | Drop a question queued for a round (hosts only) |
+| `/quiz clear` | Drop every queued question of the game (hosts only) |
+| `/quiz copy` | Queue the questions another game was played with (hosts only) |
+| `/quiz next` | Open the next round: the queued question or a drawn one (hosts only) |
+| `/quiz reveal` | Reveal the current round and publish the standings (hosts only) |
+| `/quiz end` | End the game of this server, revealing the round left open before the final scores. A game still being prepared closes without a recap (hosts only) |
 | `/admin host add` | Allow a user or a role to host (server administrators) |
 | `/admin host remove` | Withdraw host rights (server administrators) |
 | `/admin host list` | Show the hosts of this server (server administrators) |
@@ -76,6 +76,13 @@ python manage.py test         # test suite
 | `/library question add` | Create a question, with multiple choice options when `choices` is given and a listening `media` link. Separate the accepted variants of an answer with `\|` (hosts) |
 | `/library question edit` | Change the fields of a question, with the options of `question add`: an option left out keeps its field, `-` drops it. The `answer` itself cannot be dropped (hosts) |
 
+`/blindtest` is an alias of `/quiz`: every subcommand exists under both names, and takes the same options, except the two that name a quiz type.
+
+| Command | Difference |
+| --- | --- |
+| `/blindtest setup` | No `quiz_type`: the game is always a blind test |
+| `/blindtest queue` | No `quiz_type`: the question is always queued as a blind test |
+
 ## Usage
 
 - Host rights are per server:
@@ -85,23 +92,23 @@ python manage.py test         # test suite
 
 - The channel the game is played in can be configured:
   - `/admin channel set` records the default channel of the server.
-  - `/blindtest setup channel=...` plays that game in the named channel or thread.
+  - `/quiz setup channel=...` plays that game in the named channel or thread.
   - The current interaaction channel is the fallback in case none of these are set.
 
 - Same for the role that would be pinged whenever the game is published and at the start of every round:
   - `/admin ping set` records the default role to ping on the server.
-  - `/blindtest setup role=...` defines a specific role for the game.
+  - `/quiz setup role=...` defines a specific role for the game.
   - No ping if none of these are set.
 
-- `/blindtest setup` sets up a game without announcing it.
+- `/quiz setup` sets up a game without announcing it.
   - The host receives a private setup panel to add, drop or copy questions.
-  - The panel runs the same operations as `/blindtest queue`, `/blindtest unqueue`, `/blindtest clear` and `/blindtest copy`.
-  - `/blindtest publish` announces the game in its channel and swaps the setup panel for the host panel.
+  - The panel runs the same operations as `/quiz queue`, `/quiz unqueue`, `/quiz clear` and `/quiz copy`.
+  - `/quiz publish` announces the game in its channel and swaps the setup panel for the host panel.
   - No round can open before the game is published.
   - A game ended while it is still being prepared closes without a public recap.
 
-- Hosts drive a published game from the private panel sent by `/blindtest setup` or `/blindtest panel`: next round, reveal, queue, end.
-  - `/blindtest panel` reopens it when Discord cleared it.
+- Hosts drive a published game from the private panel sent by `/quiz setup` or `/quiz panel`: next round, reveal, queue, end.
+  - `/quiz panel` reopens it when Discord cleared it.
   - Every round is posted with an **Answer** button opening the answer form of the round in play.
   - The panel and the round buttons keep working after a bot restart: their state lives in the database.
 - Questions and answers belong to a server, or to the global library when their guild is empty:
@@ -130,7 +137,7 @@ A game has a quiz type (blind test by default) and each round inherits it, or ov
 
 ## Embeds
 
-Every public embed is titled with the game name — the one given at `/blindtest setup`, or `<type> #<number>` — and states the quiz type and the scoring mode.
+Every public embed is titled with the game name — the one given at `/quiz setup`, or `<type> #<number>` — and states the quiz type and the scoring mode.
 
 - A round embed shows the prompt only.
 - The answer appears with the reveal, written as `<Answer> (<Secondary answer>)`.

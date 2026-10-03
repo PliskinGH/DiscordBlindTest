@@ -1,4 +1,4 @@
-"""Blind test game logic, kept synchronous so every caller shares it.
+"""Quiz game logic, kept synchronous so every caller shares it.
 
 The Discord bot calls these helpers through ``discordbot.db.run_db``; the admin,
 tests and the future web front end call them directly.
@@ -22,7 +22,7 @@ from discordcore.models import Guild, Host, Player
 
 from . import caching, matching, scoring
 from .constants import (CLEAR_VALUE, EDITABLE_FIELDS, MAX_CHOICES,
-                        MAX_LISTED_PLAYERS, MAX_YEAR)
+                        MAX_LISTED_PLAYERS, MAX_YEAR, QUIZ_OVER)
 from .models import (Answer, AnswerVariant, Game, Guess, Question, QuizType, Round,
                      ScoringMode, Team, question_problem)
 
@@ -42,7 +42,7 @@ def is_host(guild: Guild, host_member: DiscordMember) -> bool:
 def require_host(guild: Guild, host_member: DiscordMember) -> None:
     """Raise PermissionError when the member is not a host of the guild."""
     if not is_host(guild, host_member):
-        raise PermissionError(_("Only hosts of this server can run a blind test. "
+        raise PermissionError(_("Only hosts of this server can run a quiz. "
                                 "Ask an administrator for the host permission."))
 
 
@@ -465,9 +465,9 @@ def create_game(guild: Guild, channel_id: int | None, host_member: DiscordMember
     if active is not None:
         if active.is_preparing:
             raise ValueError(_("A game is being prepared: %(name)s. Publish it "
-                               "with /blindtest publish, or end it first.")
+                               "with /quiz publish, or end it first.")
                              % {'name': active.display_name})
-        raise ValueError(_("A blind test is already running in this server."))
+        raise ValueError(_("A quiz is already running in this server."))
     game = Game.objects.create(guild=guild, channel_id=target_id,
                                ping_role_id=target_ping_role_id(
                                    guild, ping_role_id),
@@ -515,7 +515,7 @@ def finish_game(game: Game, host_member: DiscordMember) -> dict:
     """
     require_host(game.guild, host_member)
     if game.state == Game.State.FINISHED:
-        raise ValueError(_("This blind test is already over."))
+        raise ValueError(_("This quiz is already over."))
     current = current_round(game)
     reveal = None
     if current is not None and not current.is_revealed:
@@ -598,7 +598,7 @@ def queue_questions(game: Game, host_member: DiscordMember, pks: Iterable[int],
     """Queue questions for a game, skipping the ones its type cannot play."""
     require_host(game.guild, host_member)
     if not game.is_active:
-        raise ValueError(_("This blind test is over."))
+        raise ValueError(QUIZ_OVER)
     added = skipped = 0
     for pk in pks:
         question = Question.objects.filter(pk=pk).first()
@@ -718,7 +718,7 @@ def _queue_round(game: Game, host_member: DiscordMember, question: Question,
     """Queue a round ahead of time so the host does not pick it live."""
     require_host(game.guild, host_member)
     if not game.is_active:
-        raise ValueError(_("This blind test is over."))
+        raise ValueError(QUIZ_OVER)
     require_visible(game, question)
     quiz_type = quiz_type or game.type
     require_question_fits(question, quiz_type)
@@ -749,7 +749,7 @@ def start_round(game: Game, host_member: DiscordMember,
     if game.is_preparing:
         raise ValueError(_("Publish the game before opening a round."))
     if not game.is_running:
-        raise ValueError(_("This blind test is over."))
+        raise ValueError(QUIZ_OVER)
     current = current_round(game)
     if current is not None and not current.is_revealed:
         raise ValueError(_("Reveal the current round before starting the next one."))

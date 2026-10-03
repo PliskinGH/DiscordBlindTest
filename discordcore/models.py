@@ -70,7 +70,7 @@ class PlayerManager(UserManager):
 
 
 class Player(AbstractUser):
-    """A blind test player, identified by their Discord account."""
+    """A quiz player, identified by their Discord account."""
 
     first_name = None
     last_name = None
@@ -146,7 +146,7 @@ class Guild(models.Model):
 
 
 class Host(models.Model):
-    """A Discord user or role allowed to host blind tests in a guild."""
+    """A Discord user or role allowed to host quizzes in a guild."""
 
     guild = models.ForeignKey(Guild, on_delete=models.CASCADE,
                               related_name='hosts', verbose_name=_('guild'))

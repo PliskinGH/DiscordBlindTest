@@ -1,4 +1,4 @@
-"""Cache scopes, keys and limits of the blind test data.
+"""Cache scopes, keys and limits of the quiz data.
 
 A guild plays the questions of two libraries, its own and the global one, so the
 keys of its lists carry the version of both and an edit of either is seen at once.

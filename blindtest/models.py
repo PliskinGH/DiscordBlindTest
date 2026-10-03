@@ -133,7 +133,7 @@ def question_problem(question: Question, quiz_type: str) -> str | None:
 
 
 class Game(models.Model):
-    """One blind test session, hosted by a player in a Discord channel."""
+    """One quiz session, hosted by a player in a Discord channel."""
 
     class State(models.TextChoices):
         SETUP = 'SETUP', _('being prepared')

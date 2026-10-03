@@ -1,4 +1,4 @@
-"""Discord controls a blind test is played with.
+"""Discord controls a quiz is played with.
 
 Each control holds the cog and calls its operations, so the slash commands and
 the controls share one implementation.
@@ -33,6 +33,9 @@ SETUP_PUBLISH_ID = 'blindtest_setup_publish'
 SETUP_CLEAR_ID = 'blindtest_setup_clear'
 SETUP_END_ID = 'blindtest_setup_end'
 
+# Panel labels.
+END_QUIZ_LABEL = 'End the quiz'
+
 
 def pick_max(choices: 'list[dict] | None') -> int:
     """Return how many options a picker may select at once."""
@@ -63,7 +66,7 @@ class GuessModal(discord.ui.Modal):
     """
 
     def __init__(self, cog: 'GameCog', form: dict) -> None:
-        super().__init__(title='Blind test answer', timeout=None,
+        super().__init__(title='Your answer', timeout=None,
                          custom_id=GUESS_MODAL_ID)
         self.cog = cog
         self.form = form
@@ -158,7 +161,7 @@ class HostPanel(discord.ui.View):
         """Offer the unplayed questions of the library."""
         await self.cog.ask_question(interaction)
 
-    @discord.ui.button(label='End the blind test', style=discord.ButtonStyle.danger,
+    @discord.ui.button(label=END_QUIZ_LABEL, style=discord.ButtonStyle.danger,
                        custom_id=HOST_END_ID)
     async def end_game(self, interaction: discord.Interaction,
                        button: discord.ui.Button) -> None:
@@ -264,7 +267,7 @@ class SetupPanel(discord.ui.View):
         clear.callback = self.clear
         self.add_item(publish)
         self.add_item(clear)
-        end = discord.ui.Button(label='End the blind test',
+        end = discord.ui.Button(label=END_QUIZ_LABEL,
                                 style=discord.ButtonStyle.danger,
                                 custom_id=SETUP_END_ID, row=3)
         end.callback = self.end_game

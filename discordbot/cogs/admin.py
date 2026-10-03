@@ -35,20 +35,20 @@ class AdminCog(commands.Cog):
     group = app_commands.Group(name='admin',
                                description='Manage this server (administrators).')
     host = app_commands.Group(name='host',
-                              description='Who may run blind tests here.',
+                              description='Who may run quizzes here.',
                               parent=group)
     channel = app_commands.Group(
         name='channel',
-        description='Where the blind tests of this server are played.',
+        description='Where the quizzes of this server are played.',
         parent=group)
     ping = app_commands.Group(
         name='ping',
-        description='The role the blind tests of this server will ping by default.',
+        description='The role the quizzes of this server will ping by default.',
         parent=group)
 
     @app_commands.default_permissions(manage_guild=True)
     @host.command(name='add',
-                  description='Allow a user or a role to host blind tests.')
+                  description='Allow a user or a role to host quizzes.')
     @app_commands.describe(user='User allowed to host.',
                            role='Role allowed to host.')
     async def host_add(self, interaction: discord.Interaction,
@@ -104,7 +104,7 @@ class AdminCog(commands.Cog):
                 'Could not remove the host.', ephemeral=True)
 
     @app_commands.default_permissions(manage_guild=True)
-    @host.command(name='list', description='Show who may run blind tests here.')
+    @host.command(name='list', description='Show who may run quizzes here.')
     async def host_list(self, interaction: discord.Interaction) -> None:
         """List the host mentions registered for the server."""
         await interaction.response.defer(ephemeral=True)
@@ -125,7 +125,7 @@ class AdminCog(commands.Cog):
 
     @app_commands.default_permissions(manage_guild=True)
     @channel.command(name='set',
-                     description='Play the blind tests of this server here.')
+                     description='Play the quizzes of this server here.')
     @app_commands.describe(channel='Channel to play in; this one by default.')
     async def channel_set(self, interaction: discord.Interaction,
                           channel: GameChannel | None = None) -> None:
@@ -137,7 +137,7 @@ class AdminCog(commands.Cog):
             await run_db(services.set_default_channel, guild, target.id,
                          interaction.user)
             await interaction.followup.send(
-                f'Blind tests are now played in {target.mention}.', ephemeral=True)
+                f'Quizzes are now played in {target.mention}.', ephemeral=True)
         except PermissionError as error:
             await interaction.followup.send(str(error), ephemeral=True)
         except ValueError as error:
@@ -149,7 +149,7 @@ class AdminCog(commands.Cog):
 
     @app_commands.default_permissions(manage_guild=True)
     @channel.command(name='clear',
-                     description='Play the blind tests where they are started.')
+                     description='Play the quizzes where they are started.')
     async def channel_clear(self, interaction: discord.Interaction) -> None:
         """Drop the default channel of the server."""
         await interaction.response.defer(ephemeral=True)
@@ -157,7 +157,7 @@ class AdminCog(commands.Cog):
             guild = await guild_for(interaction)
             await run_db(services.clear_default_channel, guild, interaction.user)
             await interaction.followup.send(
-                'Blind tests are now played where they are started.',
+                'Quizzes are now played where they are started.',
                 ephemeral=True)
         except PermissionError as error:
             await interaction.followup.send(str(error), ephemeral=True)
@@ -168,7 +168,7 @@ class AdminCog(commands.Cog):
 
     @app_commands.default_permissions(manage_guild=True)
     @channel.command(name='show',
-                     description='Show where the blind tests of this server are played.')
+                     description='Show where the quizzes of this server are played.')
     async def channel_show(self, interaction: discord.Interaction) -> None:
         """Report the default channel of the server."""
         await interaction.response.defer(ephemeral=True)
@@ -181,7 +181,7 @@ class AdminCog(commands.Cog):
                     ephemeral=True)
                 return
             await interaction.followup.send(
-                f'Blind tests are played in <#{channel_id}>.', ephemeral=True)
+                f'Quizzes are played in <#{channel_id}>.', ephemeral=True)
         except Exception:
             logger.exception('Failed to show the default channel')
             await interaction.followup.send(
@@ -189,7 +189,7 @@ class AdminCog(commands.Cog):
 
     @app_commands.default_permissions(manage_guild=True)
     @ping.command(name='set',
-                  description='Ping this role when a blind test opens.')
+                  description='Ping this role when a quiz opens.')
     @app_commands.describe(role='Role to ping when a game starts or a round opens.')
     async def ping_set(self, interaction: discord.Interaction,
                        role: discord.Role) -> None:
@@ -201,7 +201,7 @@ class AdminCog(commands.Cog):
             await run_db(services.set_default_ping_role, guild, role.id,
                          interaction.user)
             await interaction.followup.send(
-                f'Blind tests now ping {role.mention}.', ephemeral=True)
+                f'Quizzes now ping {role.mention}.', ephemeral=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
         except Exception:
@@ -211,7 +211,7 @@ class AdminCog(commands.Cog):
 
     @app_commands.default_permissions(manage_guild=True)
     @ping.command(name='clear',
-                  description='Clear the default ping role for blind tests.')
+                  description='Clear the default ping role for quizzes.')
     async def ping_clear(self, interaction: discord.Interaction) -> None:
         """Drop the default ping role of the server."""
         await interaction.response.defer(ephemeral=True)
@@ -220,7 +220,7 @@ class AdminCog(commands.Cog):
             await run_db(services.clear_default_ping_role, guild,
                          interaction.user)
             await interaction.followup.send(
-                'Blind tests now ping nobody.', ephemeral=True)
+                'Quizzes now ping nobody.', ephemeral=True)
         except PermissionError as error:
             await interaction.followup.send(str(error), ephemeral=True)
         except Exception:
@@ -230,7 +230,7 @@ class AdminCog(commands.Cog):
 
     @app_commands.default_permissions(manage_guild=True)
     @ping.command(name='show',
-                  description='Show the role the blind tests of this server will ping by default.')
+                  description='Show the role the quizzes of this server will ping by default.')
     async def ping_show(self, interaction: discord.Interaction) -> None:
         """Report the default ping role of the server."""
         await interaction.response.defer(ephemeral=True)
@@ -242,7 +242,7 @@ class AdminCog(commands.Cog):
                     'No default ping role: a game pings nobody.', ephemeral=True)
                 return
             await interaction.followup.send(
-                f'Blind tests ping <@&{role_id}>.', ephemeral=True)
+                f'Quizzes ping <@&{role_id}>.', ephemeral=True)
         except Exception:
             logger.exception('Failed to show the default ping role')
             await interaction.followup.send(

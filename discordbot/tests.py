@@ -79,7 +79,10 @@ class EmbedTests(SimpleTestCase):
 
     def test_the_announcement_shows_no_host_command(self) -> None:
         embed = embeds.announce_embed(game_payload(), '<@1>')
-        self.assertNotIn('/blindtest', embed_text(embed))
+        text = embed_text(embed)
+        for command in ('/quiz', '/blindtest'):
+            with self.subTest(command=command):
+                self.assertNotIn(command, text)
         self.assertTrue(embed.footer.text is None)
 
     def test_no_public_embed_leaks_the_answer_before_the_reveal(self) -> None:
@@ -397,16 +400,19 @@ class BotSetupTests(SimpleTestCase):
             'admin', 'admin channel', 'admin channel clear',
             'admin channel set', 'admin channel show', 'admin host',
             'admin host add', 'admin host list',
-            'admin host remove', 'admin ping', 'admin ping clear', 'admin ping set',
-            'admin ping show', 'blindtest', 'blindtest clear',
-            'blindtest copy', 'blindtest end', 'blindtest guess',
-            'blindtest next', 'blindtest panel', 'blindtest publish',
-            'blindtest queue', 'blindtest reveal', 'blindtest setup',
-            'blindtest unqueue', 'library', 'library answer',
-            'library answer add', 'library question',
-            'library question add', 'library question edit', 'library variant',
-            'library variant add', 'library variant list',
-            'library variant remove', 'ping',
+            'admin host remove', 'admin ping', 'admin ping clear',
+            'admin ping set', 'admin ping show', 'blindtest',
+            'blindtest clear', 'blindtest copy', 'blindtest end',
+            'blindtest guess', 'blindtest next', 'blindtest panel',
+            'blindtest publish', 'blindtest queue', 'blindtest reveal',
+            'blindtest setup', 'blindtest unqueue', 'library',
+            'library answer', 'library answer add', 'library question',
+            'library question add', 'library question edit',
+            'library variant', 'library variant add',
+            'library variant list', 'library variant remove', 'ping',
+            'quiz', 'quiz clear', 'quiz copy', 'quiz end', 'quiz guess',
+            'quiz next', 'quiz panel', 'quiz publish', 'quiz queue',
+            'quiz reveal', 'quiz setup', 'quiz unqueue',
         ])
 
 
@@ -667,7 +673,7 @@ class EndGameFlowTests(FlowTestCase):
         [view] = interaction.original_edits
         self.assertTrue(all(item.disabled for item in view.children))
         self.assertEqual(interaction.followup.sent,
-                         ['No blind test is running in this server.'])
+                         ['No quiz is running in this server.'])
 
 
 class AnswerFlowTests(FlowTestCase):
@@ -1178,7 +1184,7 @@ class AdminPingTests(FlowTestCase):
         interaction = self._run(AdminCog.ping_clear, self._admin_interaction())
         self.assertIsNone(Guild.objects.get().default_ping_role_id)
         self.assertEqual(interaction.followup.sent,
-                         ['Blind tests now call nobody in.'])
+                         ['Quizzes now ping nobody.'])
 
     def test_showing_the_default_ping_role_reports_it(self) -> None:
         self.prepare_guild()
@@ -1240,7 +1246,7 @@ class AdminChannelTests(FlowTestCase):
         interaction = self._run(AdminCog.channel_clear, self._admin_interaction())
         self.assertIsNone(Guild.objects.get().default_channel_id)
         self.assertEqual(interaction.followup.sent,
-                         ['Blind tests are now played where they are started.'])
+                         ['Quizzes are now played where they are started.'])
 
     def test_showing_the_default_channel_reports_it(self) -> None:
         self.prepare_guild()

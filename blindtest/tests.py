@@ -1,4 +1,4 @@
-"""Tests for the blind test game rules."""
+"""Tests for the quiz game rules."""
 
 from collections.abc import Iterable
 from unittest import mock

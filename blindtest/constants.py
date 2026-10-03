@@ -22,4 +22,6 @@ MAX_CHOICES = 25
 MAX_LISTED_PLAYERS = 25
 # A Discord option label and an autocomplete choice name hold 100 characters.
 CHOICE_NAME_LIMIT = 100
+# Said whenever a host reaches for a game that is already over.
+QUIZ_OVER = _('This quiz is over.')
 

@@ -294,6 +294,7 @@ class FakeMessage:
 
     def __init__(self, message_id: int = 500) -> None:
         self.id = message_id
+        self.jump_url = f'https://discord.com/channels/1/{message_id}'
 
     async def edit(self, **kwargs) -> None:
         """Fail, as an ephemeral message is not editable this way."""
@@ -638,8 +639,11 @@ class EndGameFlowTests(FlowTestCase):
                           'blindtest_host_queue', 'blindtest_host_end'])
         self.assertTrue(all(item.disabled for item in view.children))
         game = Game.objects.get()
+        links = ' '.join(message.jump_url
+                         for message in interaction.channel.messages)
         self.assertEqual(interaction.followup.sent,
-                         [f'{game.display_name} ended.'])
+                         [f'{game.display_name} ended.',
+                          f'Final scores posted: {links}.'])
         self.assertEqual(game.state, Game.State.FINISHED)
         # Ending a game publishes the round left open before the final scores.
         reveal, recap = interaction.channel.embeds
@@ -663,9 +667,12 @@ class EndGameFlowTests(FlowTestCase):
         self.assertEqual(interaction.response.deferred,
                          [{'ephemeral': True, 'thinking': True}])
         self.assertEqual(interaction.original_edits, [])
+        links = ' '.join(message.jump_url
+                         for message in interaction.channel.messages)
         self.assertEqual(
             interaction.followup.sent,
-            [f'{Game.objects.get().display_name} ended.'])
+            [f'{Game.objects.get().display_name} ended.',
+             f'Final scores posted: {links}.'])
 
     def test_ending_without_a_game_closes_the_stale_panel(self) -> None:
         interaction = FakeInteraction(InteractionType.component)
@@ -756,7 +763,9 @@ class AnswerFlowTests(FlowTestCase):
             await GameCog(create_bot()).open_next_round(host)
 
         asyncio.run(run())
-        self.assertEqual(host.followup.sent, ['Round 2 opened: Zebra (Stripes).'])
+        [link] = host.channel.messages
+        self.assertEqual(host.followup.sent,
+                         [f'Round 2 opened: Zebra (Stripes): {link.jump_url}.'])
 
     def test_the_host_lines_show_the_question_and_its_answer(self) -> None:
         self.create_game(quiz_type=QuizType.MULTIPLE_CHOICE)
@@ -1047,7 +1056,9 @@ class SetupFlowTests(FlowTestCase):
         summary, controls = click.original_contents[0].split('\n')
         self.assertEqual(summary, f'**Fiesta** · Blind test · <#{game.channel_id}>')
         self.assertEqual(controls, 'Next round, reveal, queue or end.')
-        self.assertEqual(click.followup.sent, ['Fiesta is published.'])
+        [link] = click.channel.messages
+        self.assertEqual(click.followup.sent,
+                         [f'Fiesta is published: {link.jump_url}.'])
         [embed] = click.channel.embeds
         self.assertEqual(embed.title, 'Fiesta')
 

@@ -148,6 +148,13 @@ def unqueued_text(dropped: int) -> str:
     return dropped_text(dropped) if dropped else 'That question is not queued.'
 
 
+def posted_line(text: str, messages: 'Iterable[discord.Message]') -> str:
+    """Return a report of what was posted, linking every post it named."""
+    links = ' '.join(message.jump_url for message in messages
+                     if getattr(message, 'jump_url', None))
+    return f'{text.rstrip(".")}: {links}.' if links else text
+
+
 def round_note(text: str, result: dict) -> str:
     """Return a host note of a round with its listening link, if any."""
     media = embeds.media_line(result['media_url'])
@@ -600,23 +607,27 @@ class GameCog(commands.Cog):
             await interaction.followup.send(
                 'Could not publish the quiz.', ephemeral=True)
             return False
-        text = '{} is published.'.format(result['game_name'])
+        # The game is live, so an announcement that fails must not deny it.
+        ping = ping_text(result)
+        try:
+            announcement = await embeds.post(
+                game_channel(interaction, game), content=ping,
+                embeds=[embeds.announce_embed(result,
+                                             interaction.user.mention)])
+        except Exception:
+            logger.exception('Failed to post the announcement')
+            await interaction.followup.send(
+                'The announcement could not be posted.', ephemeral=True)
+            return True
+        text = posted_line('{} is published.'.format(result['game_name']),
+                           [announcement])
         if interaction.type is discord.InteractionType.component:
             await self.respond(interaction, text, panel=HostPanel(self),
                                content=host_text(result))
         else:
             await interaction.followup.send(host_text(result), ephemeral=True,
                                             view=HostPanel(self))
-        # The game is live, so an announcement that fails must not deny it.
-        ping = ping_text(result)
-        try:
-            await embeds.post(game_channel(interaction, game), content=ping,
-                              embeds=[embeds.announce_embed(
-                                  result, interaction.user.mention)])
-        except Exception:
-            logger.exception('Failed to post the announcement')
-            await interaction.followup.send(
-                'The announcement could not be posted.', ephemeral=True)
+            await interaction.followup.send(text, ephemeral=True)
         return True
 
     async def open_next_round(self, interaction: discord.Interaction) -> bool:
@@ -636,10 +647,10 @@ class GameCog(commands.Cog):
                                         embeds=[embeds.round_embed(result)],
                                         view=GamePanel(self))
             self.cache_form(message.id, result['form'])
+            note = posted_line('Round {} opened: {}.'.format(
+                result['index'], result['host_text']), [message])
             await interaction.followup.send(
-                round_note('Round {} opened: {}.'.format(
-                    result['index'], result['host_text']), result),
-                ephemeral=True)
+                round_note(note, result), ephemeral=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -675,7 +686,8 @@ class GameCog(commands.Cog):
                 'Could not reveal the round.', ephemeral=True)
             return False
         try:
-            await self.post_reveal(game_channel(interaction, game), result)
+            posted = await self.post_reveal(game_channel(interaction, game),
+                                            result)
         except Exception:
             logger.exception('Failed to publish the revealed round')
             await interaction.followup.send(
@@ -683,17 +695,19 @@ class GameCog(commands.Cog):
                     result['index']), ephemeral=True)
             return False
         await interaction.followup.send(
-            'Round {} revealed.'.format(result['index']), ephemeral=True)
+            posted_line('Round {} revealed.'.format(result['index']), posted),
+            ephemeral=True)
         return True
 
     async def post_reveal(self, channel: discord.abc.Messageable,
-                          reveal: dict) -> None:
+                          reveal: dict) -> list[discord.Message]:
         """Publish the answer of a revealed round with the standings."""
-        await embeds.post(channel, embeds=[embeds.reveal_embed(reveal)])
+        posted = [await embeds.post(channel, embeds=[embeds.reveal_embed(reveal)])]
         if reveal['scores']:
-            await embeds.post(channel, embeds=[embeds.scores_embed(
+            posted.append(await embeds.post(channel, embeds=[embeds.scores_embed(
                 reveal, f'Round {reveal["index"]} scores',
-                embeds.leader_line(reveal['scores'], 'is currently winning'))])
+                embeds.leader_line(reveal['scores'], 'is currently winning'))]))
+        return posted
 
     async def ask_question(self, interaction: discord.Interaction) -> bool:
         """Offer the unplayed questions of the library to the host."""
@@ -803,22 +817,28 @@ class GameCog(commands.Cog):
             await self.respond(interaction, 'Could not end the quiz.')
             return False
         # The game is over, so a post that fails must not deny it.
-        await self.respond(interaction, f'{result["game_name"]} ended.', closed=True)
+        await self.respond(interaction, f'{result["game_name"]} ended.',
+                           closed=True)
         channel = game_channel(interaction, game)
+        posted = []
         if result['reveal'] is not None:
             try:
-                await self.post_reveal(channel, result['reveal'])
+                posted.extend(await self.post_reveal(channel, result['reveal']))
             except Exception:
                 logger.exception('Failed to publish the revealed round')
                 await interaction.followup.send(
                     'The last round was revealed, but its answer could not be '
                     'posted.', ephemeral=True)
         try:
-            await embeds.post(channel, embeds=[embeds.recap_embed(result)])
+            posted.append(await embeds.post(channel,
+                                            embeds=[embeds.recap_embed(result)]))
         except Exception:
             logger.exception('Failed to publish the final scores')
             await interaction.followup.send(
                 'The final scores could not be posted.', ephemeral=True)
+        else:
+            await interaction.followup.send(
+                posted_line('Final scores posted.', posted), ephemeral=True)
         return True
 
     async def respond(self, interaction: discord.Interaction, text: str,

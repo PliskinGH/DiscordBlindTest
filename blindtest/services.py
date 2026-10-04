@@ -16,7 +16,8 @@ from django.utils.translation import gettext as _
 
 from discordcore.cache import (LIST_TIMEOUT, STATE_TIMEOUT, forget, guild_row_key,
                              remember)
-from discordcore.members import DiscordMember, can_manage_guild, member_mentions
+from discordcore.members import (DiscordGuild, DiscordMember, can_manage_guild,
+                                 member_mentions)
 from discordcore.mentions import normalize_mention
 from discordcore.models import Guild, Host, Player
 
@@ -429,6 +430,23 @@ def _apply_field(guild: Guild, host_member: DiscordMember, question: Question,
     return {'answer': 'expected_answer', 'artist': 'secondary_answer',
             'prompt': 'prompt', 'choices': None, 'year': 'year',
             'album': 'album', 'media': 'media_url'}[field]
+
+
+def guild_by_discord_id(discord_id: int) -> Guild | None:
+    """Return the guild row of a Discord server, or None when it is unknown."""
+    return Guild.objects.filter(discord_id=discord_id).first()
+
+
+def guilds_by_discord_ids(discord_ids: Iterable[int]) -> dict[int, Guild]:
+    """Return the guild rows of the Discord IDs given, keyed by Discord ID."""
+    return {guild.discord_id: guild
+            for guild in Guild.objects.filter(discord_id__in=list(discord_ids))}
+
+
+def add_guild(discord_guild: DiscordGuild, admin_member: DiscordMember) -> Guild:
+    """Register a Discord server the web admin was asked to manage."""
+    require_admin(admin_member)
+    return Guild.objects.from_discord(discord_guild)
 
 
 def games_count(guild: Guild) -> int:

@@ -1,0 +1,19 @@
+{% extends 'webadmin/base.html' %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-body">
+        <h1 class="h4 card-title">Log in</h1>
+        {% if discord_enabled %}
+        <a class="btn btn-primary" href="{% url 'webadmin:discord_connect' %}">Log in with Discord</a>
+        {% else %}
+        <p class="text-body-secondary mb-0">Discord login is not configured. Set
+        <code>DISCORD_CLIENT_ID</code> and <code>DISCORD_CLIENT_SECRET</code>.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

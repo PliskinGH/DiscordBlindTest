@@ -1,0 +1,12 @@
+/* Local tweaks over Bootstrap 5.3.8, which is loaded from the jsDelivr CDN. */
+
+:root {
+  --bs-primary: #5865f2;
+  --bs-primary-rgb: 88, 101, 242;
+  --bs-link-color: #5865f2;
+  --bs-link-hover-color: #4752c4;
+}
+
+.badge {
+  font-weight: 500;
+}

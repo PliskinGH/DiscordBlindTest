@@ -1,0 +1,18 @@
+{% extends 'webadmin/base.html' %}
+{% block title %}{{ guild.name }}{% endblock %}
+{% block content %}
+<h1 class="h4">{{ guild.name }}</h1>
+<p class="mb-4">
+  {% if is_admin %}<span class="badge text-bg-primary">administrator</span>{% endif %}
+  {% if is_host %}<span class="badge text-bg-secondary">host</span>{% endif %}
+  {% if not is_admin and not is_host %}
+  <span class="text-body-secondary">no rights here</span>
+  {% endif %}
+</p>
+<h2 class="h5">Current game</h2>
+{% if active_game %}
+<p>{{ active_game.display_name }} — {{ active_game.state_label }}</p>
+{% else %}
+<p class="text-body-secondary">No game is running.</p>
+{% endif %}
+{% endblock %}

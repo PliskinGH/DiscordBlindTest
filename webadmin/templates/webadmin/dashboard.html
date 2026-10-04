@@ -1,0 +1,41 @@
+{% extends 'webadmin/base.html' %}
+{% block title %}Your servers{% endblock %}
+{% block content %}
+<h1 class="h4 mb-4">Your servers</h1>
+
+{% if guilds %}
+<ul class="list-group mb-4">
+  {% for guild in guilds %}
+  <li class="list-group-item d-flex align-items-center gap-2">
+    <a href="{% url 'webadmin:guild' guild.discord_id %}">{{ guild.name }}</a>
+    {% if guild.manage %}<span class="badge text-bg-primary">administrator</span>{% endif %}
+    <span class="badge text-bg-{% if guild.active_game %}success{% else %}secondary{% endif %} ms-auto">
+      {% if guild.active_game %}{{ guild.active_game.display_name }}{% else %}no game running{% endif %}
+    </span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text-body-secondary">No server the bot has been used in yet.</p>
+{% endif %}
+
+{% if others %}
+<h2 class="h5 mb-3">Add a server</h2>
+<ul class="list-group mb-4">
+  {% for guild in others %}
+  <li class="list-group-item d-flex align-items-center gap-2">
+    <span>{{ guild.name }}</span>
+    {% if guild.invite_url %}
+    <a class="btn btn-sm btn-outline-primary ms-auto"
+       href="{{ guild.invite_url }}">Invite the bot</a>
+    {% else %}
+    <form method="post" action="{% url 'webadmin:guild_add' guild.discord_id %}" class="ms-auto">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-sm btn-primary">Add</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

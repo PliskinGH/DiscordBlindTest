@@ -28,6 +28,9 @@ python manage.py createsuperuser
 | `ALLOWED_HOSTS` | Yes | | Space-separated hosts |
 | `DATABASE_URL` | Yes | `postgres://user:password@host:port/database` | Database used by the bot
 | `TEST_GUILD_ID` | No | | Guild IDs to sync slash commands to instantly, space-separated |
+| `DISCORD_CLIENT_ID` | No | | Discord application ID, for the web admin login |
+| `DISCORD_CLIENT_SECRET` | No | | Discord application client secret, for the web admin login |
+| `DISCORD_REDIRECT_URI` | No | | OAuth2 redirect URI registered on the application |
 | `REDIS_URL` | No | `redis://host:port/index` | Cache shared by the web process and the bot |
 
 ## Discord application
@@ -35,14 +38,23 @@ python manage.py createsuperuser
 1. Create an application on https://discord.com/developers/applications, add a bot and copy its token into `DISCORD_TOKEN`.
 2. Invite the bot with the `bot` and `applications.commands` scopes.
 3. No privileged intent is needed.
+4. For the web admin, add `<DISCORD_REDIRECT_URI>` to the application's OAuth2 redirects.
 
 ## Commands
 
 ```sh
 python manage.py runbot       # run the Discord bot
-python manage.py runserver    # Django admin: questions, players, games
+python manage.py runserver    # Web admin
 python manage.py test         # test suite
 ```
+
+## Web admin
+
+`python manage.py runserver` serves the web admin at `/`; log in with Discord and open a server to see its running game.
+
+- The login uses the same Discord application as the bot, with the `identify` and `guilds` scopes.
+- It needs `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` and the registered `DISCORD_REDIRECT_URI` (the last env var is not mandatory as it can be rebuilt, but preferrable).
+- The dashboard lists only the servers the bot has a record of, with the possibility to add other servers or invite the bot to them.
 
 ## Slash commands
 

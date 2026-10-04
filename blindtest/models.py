@@ -181,7 +181,7 @@ class Game(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f'{self.host} - {self.State(self.state).display_name} (#{self.pk})'
+        return f'{self.host} - {self.state_label} (#{self.pk})'
 
     @property
     def is_running(self) -> bool:
@@ -196,6 +196,11 @@ class Game(models.Model):
     def is_active(self) -> bool:
         """Return True while the game can still take queued questions."""
         return self.state != self.State.FINISHED
+
+    @property
+    def state_label(self) -> str:
+        """Return the state name, capitalized like the other choice labels."""
+        return self.State(self.state).display_name
 
     @property
     def display_name(self) -> str:

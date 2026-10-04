@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import dj_database_url
+from django.contrib import messages
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
@@ -43,6 +44,11 @@ TEST_GUILD_IDS = [guild_id.strip() for guild_id
                   in os.environ.get('TEST_GUILD_ID', '').split(' ')
                   if guild_id.strip()]
 
+# Discord OAuth2 of the same application, used by the web admin login.
+DISCORD_CLIENT_ID = os.environ.get('DISCORD_CLIENT_ID')
+DISCORD_CLIENT_SECRET = os.environ.get('DISCORD_CLIENT_SECRET')
+DISCORD_REDIRECT_URI = os.environ.get('DISCORD_REDIRECT_URI')
+
 
 # Application definition
 
@@ -56,6 +62,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'blindtest',
     'discordbot',
+    'webadmin',
 ]
 
 MIDDLEWARE = [
@@ -142,6 +149,13 @@ CACHES = {
 AUTH_USER_MODEL = 'discordcore.Player'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+LOGIN_URL = 'webadmin:login'
+LOGIN_REDIRECT_URL = 'webadmin:dashboard'
+LOGOUT_REDIRECT_URL = 'webadmin:login'
+
+# Bootstrap names an error alert "danger"; Django tags it "error".
+MESSAGE_TAGS = {messages.ERROR: 'danger'}
 
 
 # Password validation

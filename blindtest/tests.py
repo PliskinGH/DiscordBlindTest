@@ -1093,6 +1093,13 @@ class QuizTypeTests(GameTestCase):
                                    name='  Fiesta  ')
         self.assertEqual(game.display_name, 'Fiesta')
 
+    def test_the_state_label_is_capitalized(self):
+        self.assertEqual(self.game.state_label, 'Running')
+        self.assertEqual(str(self.game),
+                         f'{self.game.host} - Running (#{self.game.pk})')
+        self.game.state = Game.State.SETUP
+        self.assertEqual(self.game.state_label, 'Being prepared')
+
     def test_a_round_inherits_the_game_type(self):
         round_ = Round.objects.get(
             pk=services.start_round(self.game, self.host, self.question)['round_id'])

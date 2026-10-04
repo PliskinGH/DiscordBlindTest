@@ -1,7 +1,8 @@
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 
-from .models import Answer, AnswerVariant, Game, Guess, Question, Round, Team
+from .models import (Answer, AnswerVariant, Broadcast, Game, Guess, Question, Round,
+                     Team)
 
 
 class AnswerVariantInline(admin.TabularInline):
@@ -91,5 +92,20 @@ class GuessAdmin(admin.ModelAdmin):
     search_fields = ('text', 'secondary_text', 'player__username',
                      'player__discord_name', 'team__name')
     autocomplete_fields = ('round', 'player', 'team')
+
+
+@admin.register(Broadcast)
+class BroadcastAdmin(admin.ModelAdmin):
+    list_display = ('id', 'game', 'kind', 'status', 'claimed_at', 'sent_at')
+    list_filter = ('kind', 'status')
+    search_fields = ('game__name', 'game__host__discord_name')
+    date_hierarchy = 'created_at'
+    readonly_fields = ('game', 'kind', 'round', 'claimed_at', 'sent_at',
+                       'message_ids', 'created_at')
+    fieldsets = (
+        (None, {'fields': ('game', 'kind', 'round', 'status')}),
+        (_('Delivery'), {'fields': ('claimed_at', 'sent_at', 'message_ids',
+                                    'error', 'created_at')}),
+    )
 
 

@@ -322,3 +322,49 @@ class Guess(models.Model):
 
     def __str__(self) -> str:
         return f'{self.player} - {self.text}'
+
+
+class Broadcast(models.Model):
+    """A public post a game still owes, posted by whichever client is around.
+
+    The game transitions live in :mod:`blindtest.services` and can be driven by
+    a caller without a Discord connection, so the public message they lead to is
+    recorded here instead of being posted straight away.
+    """
+
+    class Kind(TextChoices):
+        ANNOUNCE = 'ANNOUNCE', _('announcement')
+        ROUND = 'ROUND', _('round opened')
+        REVEAL = 'REVEAL', _('round answer and scores')
+        RECAP = 'RECAP', _('final scores')
+
+    class Status(TextChoices):
+        PENDING = 'PENDING', _('waiting to be posted')
+        CLAIMED = 'CLAIMED', _('being posted')
+        SENT = 'SENT', _('posted')
+        FAILED = 'FAILED', _('could not be posted')
+
+    game = models.ForeignKey(Game, on_delete=models.CASCADE,
+                             related_name='broadcasts', verbose_name=_('game'))
+    kind = models.CharField(_('kind'), max_length=20, choices=Kind)
+    round = models.ForeignKey(Round, on_delete=models.CASCADE, null=True,
+                              blank=True, related_name='broadcasts',
+                              verbose_name=_('round'))
+    status = models.CharField(_('status'), max_length=10, choices=Status,
+                              default=Status.PENDING)
+    claimed_at = models.DateTimeField(_('claimed at'), blank=True, null=True,
+                                      default=None)
+    sent_at = models.DateTimeField(_('sent at'), blank=True, null=True,
+                                   default=None)
+    message_ids = models.JSONField(_('message ids'), default=list, blank=True)
+    error = models.TextField(_('error'), blank=True)
+    created_at = models.DateTimeField(_('created at'), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('broadcast')
+        verbose_name_plural = _('broadcasts')
+        ordering = ('created_at', 'pk')
+        indexes = [models.Index(fields=['status', 'created_at'])]
+
+    def __str__(self) -> str:
+        return f'{self.game} - {self.Kind(self.kind).display_name}'

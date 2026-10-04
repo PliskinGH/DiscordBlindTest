@@ -24,4 +24,10 @@ MAX_LISTED_PLAYERS = 25
 CHOICE_NAME_LIMIT = 100
 # Said whenever a host reaches for a game that is already over.
 QUIZ_OVER = _('This quiz is over.')
+# How long a client may hold a broadcast before another may take it over.
+BROADCAST_CLAIM_TIMEOUT = 300
+# How many broadcasts a client posts in one pass.
+BROADCAST_BATCH = 20
+# How much of a failure reason a broadcast keeps.
+BROADCAST_ERROR_LIMIT = 500
 

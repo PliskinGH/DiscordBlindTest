@@ -123,6 +123,12 @@ python manage.py test         # test suite
   - `/quiz panel` reopens it when Discord cleared it.
   - Every round is posted with an **Answer** button opening the answer form of the round in play.
   - The panel and the round buttons keep working after a bot restart: their state lives in the database.
+
+- A game change that has to be announced, opened, answered or ended is recorded as a **broadcast**, posted by the bot holding the Discord connection:
+  - The slash commands and their controls post the broadcast they just recorded.
+  - A caller without a connection records it only, and the bot posts it on its next pass.
+  - Every broadcast is made exactly once, whichever client claims it first.
+
 - Questions and answers belong to a server, or to the global library when their guild is empty:
   - The global library is defined in the Django admin only.
   - Every Discord change stays tied to the server it is made from.

@@ -1,6 +1,7 @@
 """Tests for the quiz game rules."""
 
 from collections.abc import Iterable
+from datetime import timedelta
 from unittest import mock
 
 from django.core.cache import cache
@@ -10,14 +11,15 @@ from django.db.models import ProtectedError
 from django.db.utils import IntegrityError
 from django.test import SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 
 from discordcore.mentions import role_mention, user_mention
 from discordcore.models import Guild, Player
 
 from . import caching, matching, services
-from .constants import DEFAULT_BLIND_TEST_PROMPT
-from .models import (Answer, AnswerVariant, Game, Guess, Question, QuizType, Round,
-                     ScoringMode)
+from .constants import BROADCAST_CLAIM_TIMEOUT, DEFAULT_BLIND_TEST_PROMPT
+from .models import (Answer, AnswerVariant, Broadcast, Game, Guess, Question,
+                     QuizType, Round, ScoringMode)
 
 
 class FakeRole:
@@ -1546,3 +1548,115 @@ class ScoreboardQueryTests(GameTestCase):
                 services.finish_game(game, self.host)
             return len(captured)
         self.assertEqual(queries(1), queries(3))
+
+
+class BroadcastTests(GameTestCase):
+    """The public posts a game owes, and the client that makes them."""
+
+    def prepared_game(self) -> Game:
+        """Return a game waiting to be published."""
+        return services.create_game(self.guild, 100, self.host,
+                                   state=Game.State.SETUP)
+
+    def running_game(self) -> Game:
+        """Return a published game with no round open."""
+        return self.create_game()
+
+    def played_game(self) -> Game:
+        """Return a game with a round open in it."""
+        game = self.create_game()
+        services.start_round(game, self.host)
+        return game
+
+    def test_opening_a_round_records_the_post_it_owes(self):
+        payload, broadcast = services.open_round(self.running_game(), self.host)
+        self.assertEqual(broadcast.kind, Broadcast.Kind.ROUND)
+        self.assertEqual(broadcast.status, Broadcast.Status.PENDING)
+        self.assertEqual(broadcast.round_id, payload['round_id'])
+        self.assertIsNone(broadcast.sent_at)
+
+    def test_publishing_records_the_announcement_it_owes(self):
+        _payload, broadcast = services.announce_game(self.prepared_game(),
+                                                     self.host)
+        self.assertEqual(broadcast.kind, Broadcast.Kind.ANNOUNCE)
+        self.assertIsNone(broadcast.round_id)
+
+    def test_a_refused_transition_records_no_post(self):
+        with self.assertRaises(ValueError):
+            services.announce_game(self.create_game(), self.host)
+        self.assertEqual(Broadcast.objects.count(), 0)
+
+    def test_a_claimed_post_is_left_to_the_client_that_owns_it(self):
+        _payload, broadcast = services.open_round(
+            self.running_game(), self.host, claim=True)
+        self.assertEqual(broadcast.status, Broadcast.Status.CLAIMED)
+        self.assertFalse(services.claim_broadcast(broadcast.pk))
+        self.assertEqual(services.pending_broadcasts(), [])
+
+    def test_only_one_client_takes_a_post(self):
+        _payload, broadcast = services.open_round(self.running_game(),
+                                                  self.host)
+        self.assertTrue(services.claim_broadcast(broadcast.pk))
+        self.assertFalse(services.claim_broadcast(broadcast.pk))
+
+    def _expire(self, broadcast: Broadcast) -> None:
+        """Make a held post look abandoned by the client that owns it."""
+        Broadcast.objects.filter(pk=broadcast.pk).update(
+            claimed_at=timezone.now()
+            - timedelta(seconds=BROADCAST_CLAIM_TIMEOUT + 1))
+
+    def test_a_post_held_for_too_long_is_taken_over(self):
+        _payload, broadcast = services.open_round(
+            self.running_game(), self.host, claim=True)
+        self.assertEqual(services.pending_broadcasts(), [])
+        self._expire(broadcast)
+        self.assertEqual([b.pk for b in services.pending_broadcasts()],
+                         [broadcast.pk])
+        self.assertTrue(services.claim_broadcast(broadcast.pk))
+
+    def test_the_posts_come_oldest_first(self):
+        game = self.running_game()
+        first = services.enqueue(game, Broadcast.Kind.ANNOUNCE)
+        second = services.enqueue(game, Broadcast.Kind.RECAP)
+        self.assertEqual([b.pk for b in services.pending_broadcasts()],
+                         [first.pk, second.pk])
+
+    def test_a_finished_game_owes_the_answer_and_the_scores(self):
+        _payload, posts = services.close_game(self.played_game(), self.host)
+        self.assertEqual([broadcast.kind for broadcast, _payload in posts],
+                         [Broadcast.Kind.REVEAL, Broadcast.Kind.RECAP])
+
+    def test_a_game_ended_with_no_open_round_owes_only_the_scores(self):
+        _payload, posts = services.close_game(self.create_game(), self.host)
+        self.assertEqual([broadcast.kind for broadcast, _payload in posts],
+                         [Broadcast.Kind.RECAP])
+
+    def test_a_post_read_later_shows_what_it_showed(self):
+        payload, broadcast = services.open_round(self.running_game(), self.host)
+        self.assertEqual(services.broadcast_payload(broadcast), payload)
+
+    def test_the_answer_and_the_scores_read_the_same_later(self):
+        payload, posts = services.close_game(self.played_game(), self.host)
+        reveal, recap = posts
+        self.assertEqual(services.broadcast_payload(reveal[0]), payload['reveal'])
+        self.assertEqual(
+            services.broadcast_payload(recap[0]),
+            {key: value for key, value in payload.items() if key != 'reveal'})
+
+    def test_a_post_keeps_the_messages_it_produced(self):
+        _payload, broadcast = services.open_round(self.running_game(),
+                                                  self.host)
+        services.mark_broadcast_sent(broadcast, [11, 12])
+        self.assertEqual(broadcast.status, Broadcast.Status.SENT)
+        self.assertEqual(broadcast.message_ids, [11, 12])
+        self.assertIsNotNone(broadcast.sent_at)
+        self.assertEqual(services.pending_broadcasts(), [])
+
+    def test_a_post_that_could_not_be_made_keeps_its_reason(self):
+        _payload, broadcast = services.open_round(self.running_game(),
+                                                  self.host)
+        services.mark_broadcast_failed(broadcast, 'its channel is gone')
+        self.assertEqual(broadcast.status, Broadcast.Status.FAILED)
+        self.assertEqual(broadcast.error, 'its channel is gone')
+        # A failed post is not retried behind the caller's back.
+        self.assertEqual(services.pending_broadcasts(), [])

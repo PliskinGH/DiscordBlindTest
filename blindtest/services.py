@@ -7,6 +7,7 @@ tests and the future web front end call them directly.
 import logging
 import random
 from collections.abc import Iterable
+from datetime import timedelta
 from urllib.parse import urlsplit
 
 from django.db import transaction
@@ -18,14 +19,15 @@ from discordcore.cache import (LIST_TIMEOUT, STATE_TIMEOUT, forget, guild_row_ke
                              remember)
 from discordcore.members import (DiscordGuild, DiscordMember, can_manage_guild,
                                  member_mentions)
-from discordcore.mentions import normalize_mention
+from discordcore.mentions import normalize_mention, user_mention
 from discordcore.models import Guild, Host, Player
 
 from . import caching, matching, scoring
-from .constants import (CLEAR_VALUE, EDITABLE_FIELDS, MAX_CHOICES,
-                        MAX_LISTED_PLAYERS, MAX_YEAR, QUIZ_OVER)
-from .models import (Answer, AnswerVariant, Game, Guess, Question, QuizType, Round,
-                     ScoringMode, Team, question_problem)
+from .constants import (BROADCAST_BATCH, BROADCAST_CLAIM_TIMEOUT,
+                        BROADCAST_ERROR_LIMIT, CLEAR_VALUE, EDITABLE_FIELDS,
+                        MAX_CHOICES, MAX_LISTED_PLAYERS, MAX_YEAR, QUIZ_OVER)
+from .models import (Answer, AnswerVariant, Broadcast, Game, Guess, Question,
+                     QuizType, Round, ScoringMode, Team, question_problem)
 
 logger = logging.getLogger(__name__)
 
@@ -528,9 +530,29 @@ def publish_game(game: Game, host_member: DiscordMember) -> dict:
     game.state = Game.State.RUNNING
     game.save(update_fields=['state'])
     logger.info('Game %s published', game.pk)
+    return announcement_payload(game)
+
+
+def announcement_payload(game: Game) -> dict:
+    """Return what the announcement of a published game shows."""
     return {**game_summary(game), 'game_id': game.pk,
             'scoring_label': ScoringMode(game.scoring_mode).display_name,
             'queued': queued_count(game), 'created_at': game.created_at,
+            'channel_id': game.channel_id,
+            'host_mention': user_mention(game.host.discord_user_id)}
+
+
+def recap_payload(game: Game, rounds: Iterable[Round] | None = None) -> dict:
+    """Return what the final scores of a finished game show."""
+    rounds = _scored_rounds(game, rounds)
+    return {'game_id': game.pk, 'game_name': game.display_name,
+            'type_label': QuizType(game.type).display_name,
+            'scoring_label': ScoringMode(game.scoring_mode).display_name,
+            'scores': game_scores(game, rounds),
+            'teams': game_team_scores(game, rounds),
+            'rounds': len(rounds),
+            'answers': sum(len(round_.guesses.all()) for round_ in rounds),
+            'finished_at': game.finished_at,
             'channel_id': game.channel_id}
 
 
@@ -552,17 +574,7 @@ def finish_game(game: Game, host_member: DiscordMember) -> dict:
     game.finished_at = timezone.now()
     game.save(update_fields=['state', 'finished_at'])
     logger.info('Game %s finished', game.pk)
-    rounds = _scored_rounds(game)
-    return {'game_id': game.pk, 'game_name': game.display_name,
-            'type_label': QuizType(game.type).display_name,
-            'scoring_label': ScoringMode(game.scoring_mode).display_name,
-            'scores': game_scores(game, rounds),
-            'teams': game_team_scores(game, rounds),
-            'rounds': len(rounds),
-            'answers': sum(len(round_.guesses.all()) for round_ in rounds),
-            'finished_at': game.finished_at,
-            'reveal': reveal,
-            'channel_id': game.channel_id}
+    return {**recap_payload(game, _scored_rounds(game)), 'reveal': reveal}
 
 
 def current_round(game: Game) -> Round | None:
@@ -804,10 +816,15 @@ def start_round(game: Game, host_member: DiscordMember,
         queued.save(update_fields=['started_at'])
     logger.info('Game %s round %s started on %s', game.pk, queued.index,
                 queued.question)
-    display = round_display(queued)
-    display['queued'] = queued_count(game)
+    return round_payload(queued)
+
+
+def round_payload(round_: Round) -> dict:
+    """Return what the message opening a round shows, with its answer form."""
+    display = round_display(round_)
+    display['queued'] = queued_count(round_.game)
     display['form'] = answer_form(display)
-    display['ping_role_id'] = game.ping_role_id
+    display['ping_role_id'] = round_.game.ping_role_id
     return display
 
 
@@ -971,13 +988,17 @@ def round_answers(round_: Round) -> dict:
                             for guess in right][:MAX_LISTED_PLAYERS]}
 
 
-def reveal_round(round_: Round, host_member: DiscordMember) -> dict:
-    """Reveal a round and return its answer with the standings."""
-    round_ = _reveal_round(round_, host_member)
+def reveal_payload(round_: Round) -> dict:
+    """Return what the answer of a revealed round and its standings show."""
     display = round_display(round_)
     display['scores'] = game_scores(round_.game)
     display.update(round_answers(round_))
     return display
+
+
+def reveal_round(round_: Round, host_member: DiscordMember) -> dict:
+    """Reveal a round and return its answer with the standings."""
+    return reveal_payload(_reveal_round(round_, host_member))
 
 
 def _reveal_round(round_: Round, host_member: DiscordMember) -> Round:
@@ -1098,6 +1119,131 @@ def assign_player(team: Team, host_member: DiscordMember, player: Player) -> Tea
 def team_of(game: Game, player: Player) -> Team | None:
     """Return the team of the player in this game, if any."""
     return player.teams.filter(game=game).first()
+
+
+# The outbox: the public posts a game owes, delivered by whichever client holds
+# the Discord connection. The transitions above stay the single place a game
+# changes; these record what has to reach the server, and let a caller without a
+# connection drive the very same transitions.
+
+
+def enqueue(game: Game, kind: str, *, round_: Round | None = None,
+            claim: bool = False) -> Broadcast:
+    """Record a public post a game still owes.
+
+    ``claim`` marks the row as owned by the caller enqueueing it. The bot does
+    so in the same transaction as the transition, which keeps the worker from
+    taking over a post that is already being made.
+    """
+    return Broadcast.objects.create(
+        game=game, kind=kind, round=round_,
+        status=Broadcast.Status.CLAIMED if claim else Broadcast.Status.PENDING,
+        claimed_at=timezone.now() if claim else None)
+
+
+def _claimable() -> Q:
+    """Return the broadcasts a client may take: free, or held for too long."""
+    stale = timezone.now() - timedelta(seconds=BROADCAST_CLAIM_TIMEOUT)
+    return (Q(status=Broadcast.Status.PENDING, claimed_at__isnull=True)
+            | Q(status=Broadcast.Status.CLAIMED, claimed_at__lt=stale))
+
+
+def claim_broadcast(broadcast_pk: int) -> bool:
+    """Take a broadcast for delivery, refusing one already taken or sent."""
+    return bool(Broadcast.objects.filter(pk=broadcast_pk)
+                .filter(_claimable())
+                .update(status=Broadcast.Status.CLAIMED,
+                        claimed_at=timezone.now()))
+
+
+def pending_broadcasts(limit: int = BROADCAST_BATCH) -> list[Broadcast]:
+    """Return the broadcasts the client owes, oldest first."""
+    return list((Broadcast.objects
+                 .filter(_claimable())
+                 .select_related('game__host', 'round__game')
+                 .order_by('created_at', 'pk')[:limit]))
+
+
+def broadcast_payload(broadcast: Broadcast) -> dict:
+    """Rebuild what a broadcast shows, from the state it was recorded for."""
+    if broadcast.kind == Broadcast.Kind.ANNOUNCE:
+        return announcement_payload(broadcast.game)
+    if broadcast.kind == Broadcast.Kind.RECAP:
+        return recap_payload(broadcast.game)
+    if broadcast.round_id is None:
+        raise ValueError(_("This post has no round to publish."))
+    if broadcast.kind == Broadcast.Kind.ROUND:
+        return round_payload(broadcast.round)
+    return reveal_payload(broadcast.round)
+
+
+def mark_broadcast_sent(broadcast: Broadcast,
+                        message_ids: Iterable[int] = ()) -> Broadcast:
+    """Record the messages a broadcast produced."""
+    broadcast.status = Broadcast.Status.SENT
+    broadcast.sent_at = timezone.now()
+    broadcast.message_ids = [int(pk) for pk in message_ids]
+    broadcast.save(update_fields=['status', 'sent_at', 'message_ids'])
+    return broadcast
+
+
+def mark_broadcast_failed(broadcast: Broadcast, reason: str) -> Broadcast:
+    """Record that a broadcast could not be posted."""
+    broadcast.status = Broadcast.Status.FAILED
+    broadcast.error = str(reason)[:BROADCAST_ERROR_LIMIT]
+    broadcast.save(update_fields=['status', 'error'])
+    return broadcast
+
+
+@transaction.atomic
+def announce_game(game: Game, host_member: DiscordMember, *,
+                  claim: bool = False) -> tuple[dict, Broadcast]:
+    """Publish a game and record the announcement its client must post."""
+    payload = publish_game(game, host_member)
+    return payload, enqueue(game, Broadcast.Kind.ANNOUNCE, claim=claim)
+
+
+@transaction.atomic
+def open_round(game: Game, host_member: DiscordMember,
+               question: Question | None = None, quiz_type: str = '',
+               *, claim: bool = False) -> tuple[dict, Broadcast]:
+    """Open the next round and record the message its client must post."""
+    payload = start_round(game, host_member, question, quiz_type)
+    return payload, enqueue(game, Broadcast.Kind.ROUND,
+                            round_=Round.objects.get(pk=payload['round_id']),
+                            claim=claim)
+
+
+@transaction.atomic
+def close_round(round_: Round, host_member: DiscordMember, *,
+                claim: bool = False) -> tuple[dict, Broadcast]:
+    """Reveal a round and record the posts its client must make."""
+    payload = reveal_round(round_, host_member)
+    return payload, enqueue(round_.game, Broadcast.Kind.REVEAL, round_=round_,
+                            claim=claim)
+
+
+@transaction.atomic
+def close_game(game: Game, host_member: DiscordMember, *,
+               claim: bool = False) -> tuple[dict, list[tuple[Broadcast, dict]]]:
+    """End a game, recording the reveal of its open round and the recap.
+
+    A game that ends with a round still open owes two posts: the answer of that
+    round, and the final scores. Splitting them keeps every broadcast tied to one
+    message, and each is returned with the payload its own message is built from,
+    so a client posting them now and one posting them later render the same.
+    """
+    payload = finish_game(game, host_member)
+    reveal = payload['reveal']
+    posts = []
+    if reveal is not None:
+        posts.append((enqueue(
+            game, Broadcast.Kind.REVEAL,
+            round_=Round.objects.get(pk=reveal['round_id']), claim=claim), reveal))
+    posts.append((enqueue(game, Broadcast.Kind.RECAP, claim=claim),
+                  {key: value for key, value in payload.items()
+                   if key != 'reveal'}))
+    return payload, posts
 
 
 def game_team_scores(game: Game,

@@ -5,10 +5,10 @@ from collections import OrderedDict
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from blindtest import services
-from blindtest.models import Game, Question, QuizType, ScoringMode
+from blindtest.models import Broadcast, Game, Question, QuizType, ScoringMode
 from discordcore.models import Guild
 
 from .. import embeds
@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 # Answer forms primed by the rounds opened in this process.
 MAX_CACHED_FORMS = 20
+# How often the client posts the broadcasts recorded without one.
+BROADCAST_POLL_SECONDS = 1.0
 
 # The channels Discord offers for a game: any channel or thread of the server.
 GameChannel = discord.abc.GuildChannel | discord.Thread
@@ -49,16 +51,6 @@ GUESS_OPTIONS = {'answer': 'Your answer, e.g. the music title.',
 QUEUE_OPTIONS = {'question': 'Question to play next.'}
 UNQUEUE_OPTIONS = {'question': 'Queued question to drop.'}
 COPY_OPTIONS = {'source': 'Game to copy the questions from.'}
-
-
-def game_channel(interaction: discord.Interaction,
-                 game: Game) -> discord.abc.Messageable:
-    """Return the channel of a game, or the invoking one when it is gone."""
-    client = interaction.client
-    guild = interaction.guild
-    channel = (client.get_channel(game.channel_id)
-               or (guild.get_channel(game.channel_id) if guild else None))
-    return channel or interaction.channel
 
 
 def named_channel_id(interaction: discord.Interaction,
@@ -224,6 +216,12 @@ class GameCog(commands.Cog):
         for view in self.controls():
             self.bot.add_view(view)
             logger.info('Registered persistent view %s', type(view).__name__)
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Start posting the recorded broadcasts once the client is connected."""
+        if not self.broadcast_loop.is_running():
+            self.broadcast_loop.start()
 
     def controls(self) -> list[discord.ui.View]:
         """Return the controls a restart has to revive, as they are stateless."""
@@ -598,7 +596,8 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
-            result = await run_db(services.publish_game, game, interaction.user)
+            result, broadcast = await run_db(
+                services.announce_game, game, interaction.user, claim=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -608,19 +607,15 @@ class GameCog(commands.Cog):
                 'Could not publish the quiz.', ephemeral=True)
             return False
         # The game is live, so an announcement that fails must not deny it.
-        ping = ping_text(result)
         try:
-            announcement = await embeds.post(
-                game_channel(interaction, game), content=ping,
-                embeds=[embeds.announce_embed(result,
-                                             interaction.user.mention)])
+            posted = await self.post_broadcast(broadcast, result,
+                                           fallback=interaction.channel)
         except Exception:
-            logger.exception('Failed to post the announcement')
             await interaction.followup.send(
                 'The announcement could not be posted.', ephemeral=True)
             return True
         text = posted_line('{} is published.'.format(result['game_name']),
-                           [announcement])
+                           posted)
         if interaction.type is discord.InteractionType.component:
             await self.respond(interaction, text, panel=HostPanel(self),
                                content=host_text(result))
@@ -640,17 +635,8 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
-            result = await run_db(services.start_round, game, interaction.user)
-            ping = ping_text(result)
-            message = await embeds.post(game_channel(interaction, game),
-                                        content=ping,
-                                        embeds=[embeds.round_embed(result)],
-                                        view=GamePanel(self))
-            self.cache_form(message.id, result['form'])
-            note = posted_line('Round {} opened: {}.'.format(
-                result['index'], result['host_text']), [message])
-            await interaction.followup.send(
-                round_note(note, result), ephemeral=True)
+            result, broadcast = await run_db(
+                services.open_round, game, interaction.user, claim=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -659,6 +645,17 @@ class GameCog(commands.Cog):
             await interaction.followup.send(
                 'Could not open the next round.', ephemeral=True)
             return False
+        try:
+            posted = await self.post_broadcast(broadcast, result,
+                                           fallback=interaction.channel)
+        except Exception:
+            await interaction.followup.send(
+                'The round is open, but its message could not be posted.',
+                ephemeral=True)
+            return False
+        note = posted_line('Round {} opened: {}.'.format(
+            result['index'], result['host_text']), posted)
+        await interaction.followup.send(round_note(note, result), ephemeral=True)
         return True
 
     async def reveal_round(self, interaction: discord.Interaction) -> bool:
@@ -676,7 +673,8 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     'No round is running yet.', ephemeral=True)
                 return False
-            result = await run_db(services.reveal_round, round_, interaction.user)
+            result, broadcast = await run_db(
+                services.close_round, round_, interaction.user, claim=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -686,10 +684,9 @@ class GameCog(commands.Cog):
                 'Could not reveal the round.', ephemeral=True)
             return False
         try:
-            posted = await self.post_reveal(game_channel(interaction, game),
-                                            result)
+            posted = await self.post_broadcast(broadcast, result,
+                                           fallback=interaction.channel)
         except Exception:
-            logger.exception('Failed to publish the revealed round')
             await interaction.followup.send(
                 'Round {} revealed, but its answer could not be published.'.format(
                     result['index']), ephemeral=True)
@@ -708,6 +705,84 @@ class GameCog(commands.Cog):
                 reveal, f'Round {reveal["index"]} scores',
                 embeds.leader_line(reveal['scores'], 'is currently winning'))]))
         return posted
+
+    # The public messages of a game, through one helper: the controls post their
+    # own broadcasts as they make them, and the loop posts those a caller
+    # without a Discord connection recorded.
+
+    def broadcast_channel(self, game: Game) -> discord.abc.Messageable | None:
+        """Return the channel a game is played in, or None when it is gone."""
+        channel = self.bot.get_channel(game.channel_id)
+        if channel is not None:
+            return channel
+        guild = self.bot.get_guild(game.guild_id)
+        return guild.get_channel(game.channel_id) if guild else None
+
+    async def _deliver(self, broadcast: Broadcast, payload: dict,
+                       fallback: discord.abc.Messageable | None = None
+                       ) -> list[discord.Message]:
+        """Make the public messages one broadcast stands for.
+
+        ``fallback`` is where a flow posts when the channel of the game is gone;
+        a client reading the outbox has no such place.
+        """
+        channel = self.broadcast_channel(broadcast.game) or fallback
+        if channel is None:
+            raise ValueError('Game {}: its channel is gone.'.format(
+                broadcast.game_id))
+        if broadcast.kind == Broadcast.Kind.ANNOUNCE:
+            return [await embeds.post(
+                channel, content=ping_text(payload),
+                embeds=[embeds.announce_embed(payload,
+                                              payload['host_mention'])])]
+        if broadcast.kind == Broadcast.Kind.ROUND:
+            message = await embeds.post(channel, content=ping_text(payload),
+                                        embeds=[embeds.round_embed(payload)],
+                                        view=GamePanel(self))
+            self.cache_form(message.id, payload['form'])
+            return [message]
+        if broadcast.kind == Broadcast.Kind.REVEAL:
+            return await self.post_reveal(channel, payload)
+        return [await embeds.post(channel, embeds=[embeds.recap_embed(payload)])]
+
+    async def post_broadcast(self, broadcast: Broadcast, payload: dict,
+                             fallback: discord.abc.Messageable | None = None,
+                             ) -> list[discord.Message]:
+        """Post what a broadcast owes, and record the messages it produced.
+
+        The caller owns the row it posts, so this never claims it again.
+        """
+        try:
+            posted = await self._deliver(broadcast, payload, fallback)
+        except Exception as error:
+            logger.exception('Failed to post broadcast %s', broadcast.pk)
+            await run_db(services.mark_broadcast_failed, broadcast, str(error))
+            raise
+        await run_db(services.mark_broadcast_sent, broadcast,
+                     [message.id for message in posted])
+        return posted
+
+    async def deliver_broadcast(self, broadcast: Broadcast,
+                                ) -> list[discord.Message]:
+        """Take a broadcast this client owes and post it, unless it was taken."""
+        payload = await run_db(services.broadcast_payload, broadcast)
+        if not await run_db(services.claim_broadcast, broadcast.pk):
+            logger.debug('Broadcast %s was already claimed', broadcast.pk)
+            return []
+        return await self.post_broadcast(broadcast, payload)
+
+    @tasks.loop(seconds=BROADCAST_POLL_SECONDS)
+    async def broadcast_loop(self) -> None:
+        """Post the broadcasts a caller without a client recorded."""
+        await self.flush_broadcasts()
+
+    async def flush_broadcasts(self) -> None:
+        """Post every broadcast this client owes, one failure not stopping the rest."""
+        for broadcast in await run_db(services.pending_broadcasts):
+            try:
+                await self.deliver_broadcast(broadcast)
+            except Exception:
+                logger.exception('Failed to deliver broadcast %s', broadcast.pk)
 
     async def ask_question(self, interaction: discord.Interaction) -> bool:
         """Offer the unplayed questions of the library to the host."""
@@ -800,7 +875,8 @@ class GameCog(commands.Cog):
                     closed=True)
                 return False
             announced = not game.is_preparing
-            result = await run_db(services.finish_game, game, interaction.user)
+            result, posts = await run_db(
+                services.close_game, game, interaction.user, claim=True)
             if not announced:
                 # A game never announced closes without a public recap.
                 await self.respond(
@@ -819,24 +895,28 @@ class GameCog(commands.Cog):
         # The game is over, so a post that fails must not deny it.
         await self.respond(interaction, f'{result["game_name"]} ended.',
                            closed=True)
-        channel = game_channel(interaction, game)
         posted = []
-        if result['reveal'] is not None:
+        for broadcast, reveal in [post for post in posts
+                                  if post[0].kind == Broadcast.Kind.REVEAL]:
             try:
-                posted.extend(await self.post_reveal(channel, result['reveal']))
+                posted.extend(await self.post_broadcast(
+                    broadcast, reveal, fallback=interaction.channel))
             except Exception:
-                logger.exception('Failed to publish the revealed round')
                 await interaction.followup.send(
                     'The last round was revealed, but its answer could not be '
                     'posted.', ephemeral=True)
-        try:
-            posted.append(await embeds.post(channel,
-                                            embeds=[embeds.recap_embed(result)]))
-        except Exception:
-            logger.exception('Failed to publish the final scores')
-            await interaction.followup.send(
-                'The final scores could not be posted.', ephemeral=True)
-        else:
+        recap_posted = False
+        for broadcast, recap in [post for post in posts
+                                 if post[0].kind == Broadcast.Kind.RECAP]:
+            try:
+                posted.extend(await self.post_broadcast(
+                    broadcast, recap, fallback=interaction.channel))
+            except Exception:
+                await interaction.followup.send(
+                    'The final scores could not be posted.', ephemeral=True)
+            else:
+                recap_posted = True
+        if recap_posted:
             await interaction.followup.send(
                 posted_line('Final scores posted.', posted), ephemeral=True)
         return True

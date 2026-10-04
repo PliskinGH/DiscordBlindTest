@@ -13,7 +13,8 @@ from django.db import connections
 from django.test import SimpleTestCase, TransactionTestCase
 
 from blindtest import constants, services
-from blindtest.models import Answer, Game, Guess, Question, QuizType, Round
+from blindtest.models import (Answer, Broadcast, Game, Guess, Question, QuizType,
+                            Round)
 from discordcore.mentions import user_mention
 from discordcore.models import Guild, Player
 
@@ -681,6 +682,75 @@ class EndGameFlowTests(FlowTestCase):
         self.assertTrue(all(item.disabled for item in view.children))
         self.assertEqual(interaction.followup.sent,
                          ['No quiz is running in this server.'])
+
+
+class BroadcastFlowTests(FlowTestCase):
+    """A post recorded without a client is made by the one holding it."""
+
+    @staticmethod
+    def _cog_posting_to(channel: FakeChannel) -> GameCog:
+        """Return a cog whose client resolves the channel of a game."""
+        cog = GameCog(create_bot())
+        cog.broadcast_channel = lambda game: channel
+        return cog
+
+    def _record_a_round(self) -> None:
+        """Open a round the way a caller without a client would."""
+        game = services.active_game(Guild.objects.get(discord_id=1))
+        services.reveal_round(services.current_round(game), FakeMember(42))
+        services.open_round(game, FakeMember(42))
+
+    def test_the_client_posts_a_recorded_round(self) -> None:
+        self.create_game()
+        self._record_a_round()
+        channel = FakeChannel()
+        cog = self._cog_posting_to(channel)
+        asyncio.run(cog.flush_broadcasts())
+        [message] = channel.messages
+        [embed] = channel.embeds
+        self.assertIn('Round 2', embed.title)
+        self.assertEqual(cog.forms[message.id]['round_id'],
+                         services.current_round(Game.objects.get()).pk)
+
+    def test_a_recorded_post_is_made_once(self) -> None:
+        self.create_game()
+        self._record_a_round()
+        channel = FakeChannel()
+        cog = self._cog_posting_to(channel)
+        asyncio.run(cog.flush_broadcasts())
+        asyncio.run(cog.flush_broadcasts())
+        self.assertEqual(len(channel.messages), 1)
+        broadcast = Broadcast.objects.get()
+        self.assertEqual(broadcast.status, Broadcast.Status.SENT)
+        self.assertEqual(broadcast.message_ids, [channel.messages[0].id])
+
+    def test_a_post_taken_by_another_client_is_left_alone(self) -> None:
+        self.create_game()
+        self._record_a_round()
+        broadcast = Broadcast.objects.get()
+        self.assertTrue(services.claim_broadcast(broadcast.pk))
+        channel = FakeChannel()
+        asyncio.run(self._cog_posting_to(channel).flush_broadcasts())
+        self.assertEqual(channel.messages, [])
+
+    def test_a_post_with_no_channel_is_marked_failed(self) -> None:
+        self.create_game()
+        self._record_a_round()
+        cog = self._cog_posting_to(None)
+        asyncio.run(cog.flush_broadcasts())
+        broadcast = Broadcast.objects.get()
+        self.assertEqual(broadcast.status, Broadcast.Status.FAILED)
+        self.assertIn('channel is gone', broadcast.error)
+
+    def test_the_answer_of_a_round_is_posted_too(self) -> None:
+        self.create_game()
+        channel = FakeChannel()
+        cog = self._cog_posting_to(channel)
+        game = services.active_game(Guild.objects.get(discord_id=1))
+        services.close_round(services.current_round(game), FakeMember(42))
+        asyncio.run(cog.flush_broadcasts())
+        titles = [embed.title for embed in channel.embeds]
+        self.assertTrue(any('answer' in title for title in titles), titles)
 
 
 class AnswerFlowTests(FlowTestCase):
@@ -1513,7 +1583,8 @@ class DeferFirstTests(SimpleTestCase):
     EXEMPT = {'question_autocomplete', 'queued_autocomplete',
               'game_autocomplete'}
     # Helpers an already deferred flow calls, answering through its followup.
-    AFTER_DEFERRING = {'answer_refused_setup'}
+    AFTER_DEFERRING = {'answer_refused_setup', 'post_broadcast',
+                       'deliver_broadcast', 'flush_broadcasts'}
 
     @staticmethod
     def _name(node) -> str | None:

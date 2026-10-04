@@ -10,8 +10,15 @@ import discord
 
 from blindtest.constants import CHOICE_NAME_LIMIT, MAX_CHOICES
 
+from .embeds import clip
+
 if TYPE_CHECKING:
     from .cogs.game import GameCog
+
+# Discord holds 45 characters of a modal title.
+MODAL_TITLE_LIMIT = 45
+# What the answer form is called when no server could be named.
+ANSWER_TITLE = 'Your answer'
 
 # Controls are persistent: the cog revives them at startup and Discord holds
 # their custom_ids, so a bot restart must not change them.
@@ -65,8 +72,9 @@ class GuessModal(discord.ui.Modal):
     field for the secondary answer; every other round asks for two texts.
     """
 
-    def __init__(self, cog: 'GameCog', form: dict) -> None:
-        super().__init__(title='Your answer', timeout=None,
+    def __init__(self, cog: 'GameCog', form: dict,
+                 title: str = ANSWER_TITLE) -> None:
+        super().__init__(title=clip(title, MODAL_TITLE_LIMIT), timeout=None,
                          custom_id=GUESS_MODAL_ID)
         self.cog = cog
         self.form = form

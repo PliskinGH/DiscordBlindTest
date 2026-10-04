@@ -1,0 +1,86 @@
+{% extends 'webadmin/base.html' %}
+{% load crispy_forms_tags %}
+{% block title %}{{ guild.name }} — settings{% endblock %}
+{% block media %}{{ channel_form.media }}{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'webadmin:guild' guild.discord_id %}">{{ guild.name }}</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Settings</li>
+  </ol>
+</nav>
+
+<div class="row g-4">
+  <div class="col-lg-6">
+    <div class="card mb-4">
+      <div class="card-body">
+        <h2 class="h6 card-title">Where the games are played</h2>
+        {% if channel %}
+        <p class="card-text">Played in <span class="badge text-bg-secondary">{{ channel }}</span></p>
+        {% else %}
+        <p class="card-text text-body-secondary">The channel the host starts the game from.</p>
+        {% endif %}
+        {% crispy channel_form %}
+        {% if channel %}
+        <form method="post" action="{% url 'webadmin:setting_channel' guild.discord_id %}"
+              class="mt-2">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="clear">
+          <button class="btn btn-outline-secondary btn-sm" type="submit">Clear the channel</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-body">
+        <h2 class="h6 card-title">The role a game pings</h2>
+        {% if ping_role %}
+        <p class="card-text">Pinged as <span class="badge text-bg-secondary">{{ ping_role }}</span></p>
+        {% else %}
+        <p class="card-text text-body-secondary">No game pings anybody by default.</p>
+        {% endif %}
+        {% crispy ping_form %}
+        {% if ping_role %}
+        <form method="post" action="{% url 'webadmin:setting_ping' guild.discord_id %}"
+              class="mt-2">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="clear">
+          <button class="btn btn-outline-secondary btn-sm" type="submit">Clear the role</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card mb-4">
+      <div class="card-body">
+        <h2 class="h6 card-title">Hosts</h2>
+        {% if hosts %}
+        <ul class="list-group list-group-flush mb-3">
+          {% for host in hosts %}
+          <li class="list-group-item d-flex align-items-center justify-content-between px-0">
+            <span class="badge text-bg-secondary">{{ host.label }}</span>
+            <form method="post" action="{% url 'webadmin:setting_hosts' guild.discord_id %}">
+              {% csrf_token %}
+              <input type="hidden" name="mention" value="{{ host.mention }}">
+              <input type="hidden" name="action" value="remove">
+              <button class="btn btn-outline-danger btn-sm" type="submit">Remove</button>
+            </form>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="card-text text-body-secondary">
+          Only the administrators of this server can host.</p>
+        {% endif %}
+        <h3 class="h6">Give a role the right to host</h3>
+        {% crispy host_role_form %}
+        <h3 class="h6 mt-3">Give one member the right to host</h3>
+        {% crispy host_user_form %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -654,6 +654,122 @@ class HostManagementTests(GameTestCase):
         with self.assertRaises(PermissionError):
             services.remove_host(self.guild, user_mention(50), self.player)
 
+    def test_adding_a_host_that_is_not_a_mention_is_refused(self):
+        with self.assertRaises(ValueError) as refused:
+            services.add_host(self.guild, 'not a mention', self.admin)
+        self.assertIn('Enter a Discord mention', str(refused.exception))
+        self.assertEqual(self.guild.hosts.count(), 1)
+
+    def test_removing_a_host_that_is_not_a_mention_is_refused(self):
+        with self.assertRaises(ValueError) as refused:
+            services.remove_host(self.guild, 'not a mention', self.admin)
+        self.assertIn('Enter a Discord mention', str(refused.exception))
+        self.assertIn('<@42>', services.hosts_of(self.guild))
+
+
+class LibraryRemovalTests(GameTestCase):
+    """Dropping what no game played and no question uses."""
+
+    def setUp(self):
+        super().setUp()
+        self.own_answer = self.guild.answers.create(text='Own')
+        self.question = self.guild.questions.create(
+            expected_answer=self.own_answer)
+        services.add_host(self.other_guild, user_mention(42),
+                          FakeMember(42, manage_guild=True))
+
+    def test_a_host_drops_an_unplayed_question(self):
+        services.remove_question(self.guild, self.host, self.question.pk)
+        self.assertFalse(Question.objects.filter(pk=self.question.pk).exists())
+
+    def test_a_played_question_is_kept(self):
+        game = self.create_game()
+        services.start_round(game, self.host, self.question)
+        with self.assertRaises(ValueError) as refused:
+            services.remove_question(self.guild, self.host, self.question.pk)
+        self.assertIn('played in a game', str(refused.exception))
+        self.assertTrue(Question.objects.filter(pk=self.question.pk).exists())
+
+    def test_dropping_a_question_of_another_guild_is_refused(self):
+        with self.assertRaises(ValueError):
+            services.remove_question(self.other_guild, self.host,
+                                     self.question.pk)
+
+    def test_a_host_drops_an_unused_answer(self):
+        spare = self.guild.answers.create(text='Spare')
+        services.remove_answer(self.guild, self.host, spare.pk)
+        self.assertFalse(self.guild.answers.filter(pk=spare.pk).exists())
+
+    def test_an_answer_a_question_uses_is_kept(self):
+        with self.assertRaises(ValueError) as refused:
+            services.remove_answer(self.guild, self.host, self.own_answer.pk)
+        self.assertIn('used by the question', str(refused.exception))
+        self.assertTrue(
+            self.guild.answers.filter(pk=self.own_answer.pk).exists())
+
+    def test_the_refusal_names_the_question_that_uses_the_answer(self):
+        self.question.prompt = 'Guess it'
+        self.question.save(update_fields=['prompt'])
+        with self.assertRaises(ValueError) as refused:
+            services.remove_answer(self.guild, self.host, self.own_answer.pk)
+        self.assertIn('Guess it', str(refused.exception))
+
+    def test_an_unplayed_question_keeps_its_answer(self):
+        with self.assertRaises(ValueError):
+            services.remove_answer(self.guild, self.host, self.own_answer.pk)
+        self.assertTrue(Question.objects.filter(pk=self.question.pk).exists())
+
+    def test_dropping_an_answer_of_another_guild_is_refused(self):
+        with self.assertRaises(ValueError):
+            services.remove_answer(self.other_guild, self.host,
+                                   self.own_answer.pk)
+
+    def test_a_stranger_drops_nothing(self):
+        with self.assertRaises(PermissionError):
+            services.remove_question(self.guild, self.player, self.question.pk)
+        with self.assertRaises(PermissionError):
+            services.remove_answer(self.guild, self.player, self.own_answer.pk)
+
+    def test_the_unused_lists_name_what_can_go(self):
+        self.assertEqual(
+            [row['pk'] for row in services.unused_questions(self.guild)],
+            [self.question.pk])
+        self.assertEqual(services.unused_answers(self.guild), [])
+
+    def test_a_played_question_leaves_the_unused_list(self):
+        game = self.create_game()
+        services.start_round(game, self.host, self.question)
+        self.assertEqual(services.unused_questions(self.guild), [])
+        self.assertEqual(services.unused_answers(self.guild), [])
+
+    def test_a_dropped_question_leaves_its_answer_behind(self):
+        services.remove_question(self.guild, self.host, self.question.pk)
+        self.assertEqual(services.unused_questions(self.guild), [])
+        self.assertEqual(
+            [answer['text'] for answer in services.unused_answers(self.guild)],
+            ['Own'])
+        services.remove_answer(self.guild, self.host, self.own_answer.pk)
+        self.assertEqual(services.unused_answers(self.guild), [])
+
+    def test_the_host_replaces_the_variants_of_an_answer(self):
+        services.set_variants(self.guild, self.host, 'Own', ['Tune', 'Air'])
+        self.assertEqual(
+            [variant.text for variant in self.own_answer.variants.all()],
+            ['Air', 'Tune'])
+        services.set_variants(self.guild, self.host, 'Own', ['Tune'])
+        self.assertEqual(
+            [variant.text for variant in self.own_answer.variants.all()],
+            ['Tune'])
+
+    def test_the_host_drops_every_variant_of_an_answer(self):
+        services.set_variants(self.guild, self.host, 'Own', ['Tune'])
+        services.set_variants(self.guild, self.host, 'Own', [])
+        self.assertEqual(self.own_answer.variants.count(), 0)
+
+    def test_the_variants_of_an_answer_that_is_not_ours_are_refused(self):
+        with self.assertRaises(ValueError):
+            services.set_variants(self.guild, self.host, 'Missing', ['Tune'])
+
 
 class LibraryTests(GameTestCase):
     def setUp(self):
@@ -830,11 +946,11 @@ class QuestionEditTests(GameTestCase):
                 secondary_text='Band', year=1999, album='Album',
                 media_url='https://youtu.be/1')['pk'])
 
-    def edit(self, field, value, question=None):
+    def edit(self, field, value=None, question=None):
         """Change one field of a question and return it reloaded."""
         question = question or self.own
         services.edit_question(self.guild, self.host, question.pk,
-                               **{field: value})
+                               **({} if value is None else {field: value}))
         question.refresh_from_db()
         return question
 
@@ -847,11 +963,11 @@ class QuestionEditTests(GameTestCase):
         self.assertEqual(self.own.year, 1999)
         self.assertEqual(self.own.media_url, 'https://youtu.be/1')
 
-    def test_a_dash_drops_a_field(self):
-        self.edit('media', ' - ')
-        self.edit('year', '-')
-        self.edit('album', '-')
-        self.edit('artist', '-')
+    def test_an_empty_field_is_cleared(self):
+        self.edit('media', ' ')
+        self.edit('year', '')
+        self.edit('album', '')
+        self.edit('artist', '')
         self.assertEqual(self.own.media_url, '')
         self.assertIsNone(self.own.year)
         self.assertEqual(self.own.album, '')
@@ -880,7 +996,7 @@ class QuestionEditTests(GameTestCase):
     def test_several_fields_change_in_one_call(self):
         services.edit_question(self.guild, self.host, self.own.pk,
                                prompt='Guess the title', year='2001',
-                               album='Other album', media='-')
+                               album='Other album', media='')
         self.own.refresh_from_db()
         self.assertEqual(self.own.prompt, 'Guess the title')
         self.assertEqual(self.own.year, 2001)
@@ -895,11 +1011,8 @@ class QuestionEditTests(GameTestCase):
         self.assertEqual(self.own.media_url, 'https://youtu.be/1')
 
     def test_a_call_without_a_field_is_refused(self):
-        for values in ({}, {'prompt': ' '}):
-            with self.subTest(values=values):
-                with self.assertRaises(ValueError):
-                    services.edit_question(self.guild, self.host, self.own.pk,
-                                           **values)
+        with self.assertRaises(ValueError):
+            services.edit_question(self.guild, self.host, self.own.pk)
         self.own.refresh_from_db()
         self.assertEqual(self.own.prompt, 'Guess it')
 
@@ -959,9 +1072,9 @@ class QuestionEditTests(GameTestCase):
         self.assertEqual(other.expected_answer.text, 'Wonderwall')
         self.assertEqual(self.own.expected_answer, previous)
 
-    def test_an_answer_cannot_be_dropped(self):
+    def test_an_answer_cannot_be_cleared(self):
         with self.assertRaises(ValueError):
-            self.edit('answer', '-')
+            self.edit('answer', '')
         self.assertEqual(self.own.expected_answer.text, 'Song')
 
     def test_renaming_the_answer_of_a_choice_question_swaps_its_option(self):
@@ -983,7 +1096,7 @@ class QuestionEditTests(GameTestCase):
         self.assertEqual(sorted(choice.text
                                 for choice in question.choices.all()),
                          ['Other', 'Right'])
-        self.edit('choices', '-', question=question)
+        self.edit('choices', '', question=question)
         self.assertEqual(question.choices.count(), 0)
 
     def test_the_choices_must_offer_the_expected_answer(self):
@@ -1002,7 +1115,7 @@ class QuestionEditTests(GameTestCase):
         services.create_round(game, self.host, self.own, QuizType.OPEN)
         with self.assertRaises(ValueError):
             services.edit_question(self.guild, self.host, self.own.pk,
-                                   prompt='-')
+                                   prompt='')
         self.own.refresh_from_db()
         self.assertEqual(self.own.prompt, 'Guess it')
 
@@ -1011,7 +1124,7 @@ class QuestionEditTests(GameTestCase):
         services.create_round(game, self.host, self.own, QuizType.OPEN)
         with self.assertRaises(ValueError):
             services.edit_question(self.guild, self.host, self.own.pk,
-                                   album='Other album', prompt='-')
+                                   album='Other album', prompt='')
         self.own.refresh_from_db()
         self.assertEqual(self.own.prompt, 'Guess it')
         self.assertEqual(self.own.album, 'Album')
@@ -1019,7 +1132,7 @@ class QuestionEditTests(GameTestCase):
     def test_a_queued_blind_test_round_leaves_a_prompt_optional(self):
         game = self.create_game()
         services.create_round(game, self.host, self.own)
-        self.edit('prompt', '-')
+        self.edit('prompt', '')
         self.assertEqual(self.own.prompt, '')
 
     def test_edit_question_returns_a_plain_label(self):
@@ -1034,7 +1147,7 @@ class QuestionEditTests(GameTestCase):
 
     def test_edit_question_lists_the_fields_it_changed(self):
         result = services.edit_question(
-            self.guild, self.host, str(self.own.pk), year='-', album='Other')
+            self.guild, self.host, str(self.own.pk), year='', album='Other')
         self.assertEqual(result['fields'], ['year', 'album'])
         self.own.refresh_from_db()
         self.assertIsNone(self.own.year)

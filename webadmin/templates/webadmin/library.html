@@ -1,0 +1,105 @@
+{% extends 'webadmin/base.html' %}
+{% load crispy_forms_tags %}
+{% block title %}{{ guild.name }} — library{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'webadmin:guild' guild.discord_id %}">{{ guild.name }}</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Library</li>
+  </ol>
+</nav>
+
+<form class="row g-2 mb-4" method="get">
+  <div class="col-auto">
+    <input class="form-control" type="search" name="q" value="{{ wanted }}"
+           placeholder="Search a question">
+  </div>
+  <div class="col-auto">
+    <button class="btn btn-outline-secondary" type="submit">Search</button>
+  </div>
+</form>
+
+{% if questions %}
+<ul class="list-group mb-4">
+  {% for question in questions %}
+  <li class="list-group-item">
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      <a href="{% url 'webadmin:question_edit' guild.discord_id question.pk %}">{{ question.label }}</a>
+      {% if question.year %}<span class="badge text-bg-secondary">{{ question.year }}</span>{% endif %}
+      {% if question.choices %}
+      <span class="badge text-bg-info">{{ question.choices|length }} choices</span>
+      {% endif %}
+    </div>
+    {% if question.media_url %}
+    <a class="small" href="{{ question.media_url }}" rel="noreferrer noopener">Listen</a>
+    {% endif %}
+    {% if question.variants %}
+    <div class="mt-2 d-flex align-items-center gap-1 flex-wrap">
+      <span class="text-body-secondary small">Also accepts:</span>
+      {% for variant in question.variants %}
+      <span class="badge text-bg-light border">{{ variant }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text-body-secondary">No question of this server yet.</p>
+{% endif %}
+
+<h2 class="h5">Not used yet</h2>
+<p class="text-body-secondary">
+  A question no game has played, and an answer no question uses, can be dropped.
+  Dropping a question leaves its answers here.
+</p>
+{% if unused_questions %}
+<ul class="list-group mb-3">
+  {% for question in unused_questions %}
+  <li class="list-group-item d-flex align-items-center justify-content-between gap-2">
+    <a href="{% url 'webadmin:question_edit' guild.discord_id question.pk %}">{{ question.label }}</a>
+    <form method="post" action="{% url 'webadmin:question_drop' guild.discord_id question.pk %}">
+      {% csrf_token %}
+      <button class="btn btn-outline-danger btn-sm" type="submit">Drop the question</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if unused_answers %}
+<ul class="list-group mb-3">
+  {% for answer in unused_answers %}
+  <li class="list-group-item d-flex align-items-center justify-content-between gap-2">
+    <span class="d-flex align-items-center gap-1 flex-wrap">
+      {{ answer.text }}
+      {% for variant in answer.variants %}
+      <span class="badge text-bg-light border">{{ variant }}</span>
+      {% endfor %}
+    </span>
+    <form method="post" action="{% url 'webadmin:answer_drop' guild.discord_id answer.pk %}">
+      {% csrf_token %}
+      <button class="btn btn-outline-danger btn-sm" type="submit">Drop the answer</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if not unused_questions and not unused_answers %}
+<p class="text-body-secondary">Everything in this library is in use.</p>
+{% endif %}
+
+<div class="accordion mt-4" id="library-forms">
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button" type="button" data-bs-toggle="collapse"
+              data-bs-target="#add-question">Add a question</button>
+    </h2>
+    <div id="add-question" class="accordion-collapse collapse"
+         data-bs-parent="#library-forms">
+      <div class="accordion-body">
+        {% crispy question_form %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -37,8 +37,8 @@ python manage.py createsuperuser
 
 1. Create an application on https://discord.com/developers/applications, add a bot and copy its token into `DISCORD_TOKEN`.
 2. Invite the bot with the `bot` and `applications.commands` scopes.
-3. No privileged intent is needed.
-4. For the web admin, add `<DISCORD_REDIRECT_URI>` to the application's OAuth2 redirects.
+3. Enable the **Server Members Intent** on the bot (only needed for the web admin).
+4. Add `<DISCORD_REDIRECT_URI>` to the application's OAuth2 redirects (only needed for the web admin).
 
 ## Commands
 
@@ -55,6 +55,7 @@ python manage.py test         # test suite
 - The login uses the same Discord application as the bot, with the `identify` and `guilds` scopes.
 - It needs `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` and the registered `DISCORD_REDIRECT_URI` (the last env var is not mandatory as it can be rebuilt, but preferrable).
 - The dashboard lists only the servers the bot has a record of, with the possibility to add other servers or invite the bot to them.
+- Each server has a **library** its hosts fill with questions, answers and accepted variants, and **settings** its administrators manage: the channel its games are played in, the role they ping, and who may host.
 
 ## Slash commands
 
@@ -98,8 +99,8 @@ python manage.py test         # test suite
 ## Usage
 
 - Host rights are per server:
-  - A server appears in the Django admin after the first command used in it.
-  - Its page lists hosts as Discord mentions — `<@123456789>` for a user, `<@&123456789>` for a role.
+  - A server appears in the web admin after the first command used in it.
+  - Its page lists hosts by name — `@Name` for a user, `@Role` for a role — and falls back to the mention when Discord no longer knows it.
   - Members with the Discord "Manage Server" permission can always host, and manage the host list with `/admin host ...`.
 
 - The channel the game is played in can be configured:

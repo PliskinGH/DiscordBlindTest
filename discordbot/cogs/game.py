@@ -13,8 +13,8 @@ from discordcore.models import Guild
 
 from .. import embeds
 from ..db import guild_for, player_for, run_db
-from ..ui import (AnswerFormPanel, GamePanel, GuessModal, HostPanel, QueuePanel,
-                  SetupPanel, disabled, option_label)
+from ..ui import (ANSWER_TITLE, AnswerFormPanel, GamePanel, GuessModal, HostPanel,
+                  QueuePanel, SetupPanel, disabled, option_label)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +138,12 @@ def dropped_text(dropped: int) -> str:
 def unqueued_text(dropped: int) -> str:
     """Return how dropping one queued question reports itself."""
     return dropped_text(dropped) if dropped else 'That question is not queued.'
+
+
+def answer_form_title(interaction: discord.Interaction) -> str:
+    """Return the title of an answer form: the bot's name in the server."""
+    guild = interaction.guild
+    return guild.me.display_name if guild is not None else ANSWER_TITLE
 
 
 def posted_line(text: str, messages: 'Iterable[discord.Message]') -> str:
@@ -949,7 +955,8 @@ class GameCog(commands.Cog):
         message = interaction.message
         form = self.forms.get(message.id if message is not None else None)
         if form is not None:
-            await interaction.response.send_modal(GuessModal(self, form))
+            await interaction.response.send_modal(
+                GuessModal(self, form, answer_form_title(interaction)))
             return
         await self.prime_form(interaction)
 
@@ -989,7 +996,8 @@ class GameCog(commands.Cog):
             await interaction.response.send_message(
                 'This form expired, click Answer again.', ephemeral=True)
             return
-        await interaction.response.send_modal(GuessModal(self, form))
+        await interaction.response.send_modal(
+            GuessModal(self, form, answer_form_title(interaction)))
 
     async def record_guess(self, interaction: discord.Interaction,
                            answer: str = '', secondary_answer: str = '',

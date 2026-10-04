@@ -3,6 +3,7 @@
 import logging
 
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.exceptions import PermissionDenied
 from django.http import Http404
 from django.utils.translation import gettext_lazy as _
 
@@ -77,10 +78,22 @@ def require_guild(discord_guild_id: int) -> Guild:
     return guild
 
 
+def require_host(request, discord_guild_id: int) -> LocalMember:
+    """Return the member, refusing one that may not host in the guild."""
+    member = member_for(request, discord_guild_id)
+    services.require_host(require_guild(discord_guild_id), member)
+    return member
+
+
+def require_admin(request, discord_guild_id: int) -> LocalMember:
+    """Return the member, refusing one that may not manage the guild."""
+    member = member_for(request, discord_guild_id, with_roles=False)
+    services.require_admin(member)
+    return member
+
+
 class GuildAccessMixin(LoginRequiredMixin):
     """Refuse a request naming no server the logged in player belongs to.
-
-    Views resolve what they work on themselves; this only checks the way in.
     """
 
     def dispatch(self, request, *args, **kwargs):
@@ -89,5 +102,30 @@ class GuildAccessMixin(LoginRequiredMixin):
         requested = kwargs.get('discord_guild_id')
         if requested is None:
             raise Http404(_('This server is not one of yours.'))
-        require_session_guild(request, int(requested))
+        guild_id = int(requested)
+        require_session_guild(request, guild_id)
+        self.check_guild_access(request, guild_id)
         return super().dispatch(request, *args, **kwargs)
+
+    def check_guild_access(self, request, discord_guild_id: int) -> None:
+        """Refuse the request when the player may not do this in the guild."""
+
+
+class HostRequired(GuildAccessMixin):
+    """Refuse a request that does not come from a host of the guild."""
+
+    def check_guild_access(self, request, discord_guild_id: int) -> None:
+        try:
+            require_host(request, discord_guild_id)
+        except PermissionError as error:
+            raise PermissionDenied(str(error)) from error
+
+
+class AdminRequired(GuildAccessMixin):
+    """Refuse a request that does not come from an administrator of the guild."""
+
+    def check_guild_access(self, request, discord_guild_id: int) -> None:
+        try:
+            require_admin(request, discord_guild_id)
+        except PermissionError as error:
+            raise PermissionDenied(str(error)) from error

@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from blindtest import constants, services
+from blindtest import services
 
 from .. import embeds
 from ..db import guild_for, run_db
@@ -14,9 +14,20 @@ from ..ui import option_label
 
 logger = logging.getLogger(__name__)
 
+# Value a host gives an option to drop the field it belongs to.
+DROP_VALUE = '-'
 # Hint the ``question edit`` options carry: an empty value keeps the field.
 KEEP_HINT = ' Leave empty to keep it.'
-DROP_HINT = f'{KEEP_HINT} {constants.CLEAR_VALUE} to drop it.'
+DROP_HINT = f'{KEEP_HINT} {DROP_VALUE} to drop it.'
+
+
+def given_fields(**values: str) -> dict[str, str]:
+    """Return the options a host filled in, an omitted one left out.
+
+    A ``-`` means the field is dropped, which the services read as an empty value.
+    """
+    return {field: '' if value.strip() == DROP_VALUE else value.strip()
+            for field, value in values.items() if value.strip()}
 
 
 async def question_autocomplete(
@@ -196,10 +207,12 @@ class LibraryCog(commands.Cog):
         try:
             guild = await guild_for(interaction)
             result = await run_db(services.edit_question, guild,
-                                  interaction.user, question, answer=answer,
-                                  artist=artist, prompt=prompt,
-                                  choices=choices, year=year, album=album,
-                                  media=media)
+                                  interaction.user, question,
+                                  **given_fields(answer=answer,
+                                                 artist=artist,
+                                                 prompt=prompt,
+                                                 choices=choices, year=year,
+                                                 album=album, media=media))
             saved = 'Question updated: **{}**. Changed: {}.'.format(
                 result['label'],
                 ', '.join(f'`{field}`' for field in result['fields']))

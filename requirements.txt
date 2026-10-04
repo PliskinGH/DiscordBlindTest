@@ -4,9 +4,13 @@ aiosignal==1.4.0
 asgiref==3.12.1
 attrs==26.1.0
 audioop-lts==0.2.2
+crispy-bootstrap5==2025.6
 discord.py==2.7.1
 dj-database-url==3.1.2
 Django==6.1.1
+django-appconf==1.2.0
+django-crispy-forms==2.5
+django-select2==8.4.8
 frozenlist==1.8.0
 gunicorn==26.2.0
 idna==3.20

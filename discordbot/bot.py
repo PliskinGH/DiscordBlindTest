@@ -25,10 +25,13 @@ class BlindTestBot(commands.Bot):
     """Discord client wired to the Django project's settings and database."""
 
     def __init__(self) -> None:
-        # Default intents only: the bot answers slash commands and components,
-        # so no privileged intent has to be enabled in the Developer Portal.
+        # The members intent backs the web admin's member search, which reads
+        # Discord over REST with the bot token. The quiz itself needs nothing
+        # else privileged.
+        intents = discord.Intents.default()
+        intents.members = True
         super().__init__(command_prefix=commands.when_mentioned,
-                         intents=discord.Intents.default())
+                         intents=intents)
 
     async def setup_hook(self) -> None:
         """Load the cogs and publish the slash commands before connecting."""

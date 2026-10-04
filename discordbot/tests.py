@@ -21,12 +21,12 @@ from discordcore.models import Guild, Player
 from . import embeds
 from .bot import create_bot
 from .cogs.admin import AdminCog
-from .cogs.game import GameCog
+from .cogs.game import GameCog, answer_form_title
 from .cogs.library import LibraryCog, question_autocomplete
 from .db import guild_for, player_for, run_db
-from .ui import (HOST_END_ID, SETUP_ADD_ID, SETUP_CLEAR_ID, SETUP_COPY_ID,
-                 SETUP_END_ID, SETUP_PUBLISH_ID, SETUP_REMOVE_ID,
-                 GuessModal, HostPanel, SetupPanel)
+from .ui import (ANSWER_TITLE, HOST_END_ID, SETUP_ADD_ID, SETUP_CLEAR_ID,
+                 SETUP_COPY_ID, SETUP_END_ID, SETUP_PUBLISH_ID,
+                 SETUP_REMOVE_ID, GuessModal, HostPanel, SetupPanel)
 
 
 def game_payload(**overrides) -> dict:
@@ -214,12 +214,18 @@ class FakeMember:
     """Minimal stand-in for a ``discord.Member``."""
 
     def __init__(self, user_id: int, roles: Iterable[int] = (),
-                 manage_guild: bool = False, top_role: FakeRole | None = None) -> None:
+                 manage_guild: bool = False, top_role: FakeRole | None = None,
+                 nickname: str = '') -> None:
         self.id = user_id
         self.name = f'user{user_id}'
+        self.nickname = nickname
         self.roles = [FakeRole(role_id) for role_id in roles]
         self.guild_permissions = FakePermissions(manage_guild)
         self.top_role = top_role or FakeRole(0, position=0)
+
+    @property
+    def display_name(self) -> str:
+        return self.nickname or self.name
 
     @property
     def mention(self) -> str:
@@ -780,6 +786,18 @@ class AnswerFlowTests(FlowTestCase):
         self.assertEqual(modal.form['round_id'], current.pk)
         self.assertEqual(modal.form['type'], QuizType.BLIND_TEST)
         self.assertIsNone(modal.pick)
+        # The form is titled after the bot, as this server knows it.
+        self.assertEqual(modal.title, 'user1')
+
+    def test_the_answer_form_is_titled_after_the_bots_nickname(self) -> None:
+        interaction = FakeInteraction()
+        interaction.guild.me.nickname = 'Quizmaster'
+        self.assertEqual(answer_form_title(interaction), 'Quizmaster')
+
+    def test_the_answer_form_outside_a_server_keeps_its_title(self) -> None:
+        interaction = FakeInteraction()
+        interaction.guild = None
+        self.assertEqual(answer_form_title(interaction), ANSWER_TITLE)
 
     def test_a_multiple_choice_round_offers_its_choices(self) -> None:
         self.create_game(quiz_type=QuizType.MULTIPLE_CHOICE)
@@ -1501,6 +1519,14 @@ class LibraryQuestionTests(FlowTestCase):
         self.assertEqual(interaction.followup.sent,
                          ['Question updated: **Song (Band)**. '
                           'Changed: `prompt`.'])
+
+    def test_an_omitted_option_keeps_its_value(self) -> None:
+        interaction = self.edit(album='Album')
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.prompt, 'Guess it')
+        self.assertEqual(interaction.followup.sent,
+                         ['Question updated: **Guess it — answer: Song '
+                          '(Band)**. Changed: `album`.'])
 
     def test_a_link_that_is_not_a_url_is_reported(self) -> None:
         interaction = self.edit(media='youtu.be/1')

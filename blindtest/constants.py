@@ -14,8 +14,6 @@ MAX_YEAR = 9999
 # Fields of a question a host edits from Discord, in question add order.
 EDITABLE_FIELDS = ('answer', 'artist', 'prompt', 'choices', 'year', 'album',
                    'media')
-# Value a host gives one of those fields to drop it.
-CLEAR_VALUE = '-'
 # A Discord select menu offers at most 25 options.
 MAX_CHOICES = 25
 # How many players an embed lists before it says "and more".
@@ -30,4 +28,6 @@ BROADCAST_CLAIM_TIMEOUT = 300
 BROADCAST_BATCH = 20
 # How much of a failure reason a broadcast keeps.
 BROADCAST_ERROR_LIMIT = 500
+# How many questions a library page lists at once.
+LIBRARY_PAGE_SIZE = 50
 

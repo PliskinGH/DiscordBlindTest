@@ -60,6 +60,9 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'crispy_forms',
+    'crispy_bootstrap5',
+    'django_select2',
     'blindtest',
     'discordbot',
     'webadmin',
@@ -92,6 +95,10 @@ TEMPLATES = [
         },
     },
 ]
+
+# The web admin renders its forms with crispy-forms on Bootstrap.
+CRISPY_ALLOWED_TEMPLATE_PACKS = 'bootstrap5'
+CRISPY_TEMPLATE_PACK = 'bootstrap5'
 
 WSGI_APPLICATION = 'discordblindtest.wsgi.application'
 

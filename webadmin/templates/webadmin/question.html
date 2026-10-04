@@ -1,0 +1,19 @@
+{% extends 'webadmin/base.html' %}
+{% load crispy_forms_tags %}
+{% block title %}Edit a question — {{ guild.name }}{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'webadmin:guild' guild.discord_id %}">{{ guild.name }}</a></li>
+    <li class="breadcrumb-item"><a href="{% url 'webadmin:library' guild.discord_id %}">Library</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Edit</li>
+  </ol>
+</nav>
+
+<h1 class="h4 mb-1">{{ question }}</h1>
+<p class="text-body-secondary mb-4">{{ question.answer_text }}</p>
+
+<div class="col-lg-8">
+  {% crispy form %}
+</div>
+{% endblock %}

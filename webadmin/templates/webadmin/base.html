@@ -9,6 +9,11 @@
       integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB"
       crossorigin="anonymous">
 <link rel="stylesheet" href="{% static 'webadmin/webadmin.css' %}">
+{# django-select2 needs jQuery, then the assets the form widgets ask for. #}
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"
+        integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo="
+        crossorigin="anonymous"></script>
+{% block media %}{% endblock %}
 </head>
 <body>
 <nav class="navbar navbar-expand-lg bg-primary" data-bs-theme="dark">

@@ -2,11 +2,21 @@
 {% block title %}{{ guild.name }}{% endblock %}
 {% block content %}
 <h1 class="h4">{{ guild.name }}</h1>
-<p class="mb-4">
+<p class="mb-2">
   {% if is_admin %}<span class="badge text-bg-primary">administrator</span>{% endif %}
   {% if is_host %}<span class="badge text-bg-secondary">host</span>{% endif %}
   {% if not is_admin and not is_host %}
   <span class="text-body-secondary">no rights here</span>
+  {% endif %}
+</p>
+<p class="mb-4">
+  {% if is_host %}
+  <a class="btn btn-sm btn-outline-primary"
+     href="{% url 'webadmin:library' guild.discord_id %}">Library</a>
+  {% endif %}
+  {% if is_admin %}
+  <a class="btn btn-sm btn-outline-secondary"
+     href="{% url 'webadmin:settings' guild.discord_id %}">Settings</a>
   {% endif %}
 </p>
 <h2 class="h5">Current game</h2>

@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from datetime import timedelta
 from urllib.parse import urlsplit
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Count, F, Max, Prefetch, Q
 from django.utils import timezone
@@ -19,13 +20,15 @@ from discordcore.cache import (LIST_TIMEOUT, STATE_TIMEOUT, forget, guild_row_ke
                              remember)
 from discordcore.members import (DiscordGuild, DiscordMember, can_manage_guild,
                                  member_mentions)
-from discordcore.mentions import normalize_mention, user_mention
+from discordcore.mentions import (normalize_mention, user_mention,
+                                 validate_mention)
 from discordcore.models import Guild, Host, Player
 
 from . import caching, matching, scoring
 from .constants import (BROADCAST_BATCH, BROADCAST_CLAIM_TIMEOUT,
-                        BROADCAST_ERROR_LIMIT, CLEAR_VALUE, EDITABLE_FIELDS,
-                        MAX_CHOICES, MAX_LISTED_PLAYERS, MAX_YEAR, QUIZ_OVER)
+                        BROADCAST_ERROR_LIMIT, EDITABLE_FIELDS,
+                        LIBRARY_PAGE_SIZE, MAX_CHOICES, MAX_LISTED_PLAYERS,
+                        MAX_YEAR, QUIZ_OVER)
 from .models import (Answer, AnswerVariant, Broadcast, Game, Guess, Question,
                      QuizType, Round, ScoringMode, Team, question_problem)
 
@@ -61,7 +64,7 @@ def add_host(guild: Guild, mention: str,
     """Allow a Discord user or role to host games in the guild."""
     require_admin(admin_member)
     host, created = Host.objects.get_or_create(guild=guild,
-                                               mention=normalize_mention(mention))
+                                               mention=_checked_mention(mention))
     if created:
         logger.info('%s is now a host of %s', host.mention, guild)
     return host
@@ -71,11 +74,20 @@ def remove_host(guild: Guild, mention: str,
                 admin_member: DiscordMember) -> Guild:
     """Withdraw the host rights of a Discord user or role in the guild."""
     require_admin(admin_member)
-    matches = guild.hosts.filter(mention=normalize_mention(mention))
+    matches = guild.hosts.filter(mention=_checked_mention(mention))
     if not matches.exists():
         raise ValueError(_("This user or role is not a host of this server."))
     matches.delete()
     return guild
+
+
+def _checked_mention(mention: str) -> str:
+    """Return the canonical mention, refusing one that names no user or role."""
+    try:
+        validate_mention(mention)
+    except ValidationError as error:
+        raise ValueError(str(error.messages[0])) from error
+    return normalize_mention(mention)
 
 
 def hosts_of(guild: Guild) -> list[str]:
@@ -332,6 +344,50 @@ def relinked_answer(guild: Guild, host_member: DiscordMember,
     return answer
 
 
+@transaction.atomic
+def set_variants(guild: Guild, host_member: DiscordMember, answer_text: str,
+                 variants: Iterable[str]) -> list[AnswerVariant]:
+    """Replace the texts an answer accepts with the ones given."""
+    require_host(guild, host_member)
+    answer = visible_answer(guild, answer_text)
+    answer.variants.all().delete()
+    given = register_variants(answer, variants)
+    logger.info('%s: %s now accepts %s', guild, answer.text, len(given))
+    return given
+
+
+def remove_question(guild: Guild, host_member: DiscordMember,
+                    pk: int | str) -> None:
+    """Drop a question of the guild's library that no game has played."""
+    question = editable_question(guild, host_member, pk)
+    if question.rounds.exists():
+        raise ValueError(_("This question was played in a game and cannot be "
+                           "dropped."))
+    pk = question.pk
+    question.delete()
+    logger.info('%s: question %s dropped', guild, pk)
+
+
+def remove_answer(guild: Guild, host_member: DiscordMember,
+                  pk: int | str) -> Answer:
+    """Drop an answer of the guild's library that no question uses."""
+    require_host(guild, host_member)
+    number = str(pk).strip()
+    answer = (guild.answers.filter(pk=int(number)).first()
+              if number.isdigit() else None)
+    if answer is None:
+        raise ValueError(_("This answer is not in this server's library."))
+    used_by = (answer.expected_for_questions.first()
+               or answer.secondary_for_questions.first()
+               or answer.choice_for_questions.first())
+    if used_by is not None:
+        raise ValueError(_('This answer is used by the question "%s" and '
+                           'cannot be dropped.') % question_line(used_by))
+    answer.delete()
+    logger.info('%s: answer %s dropped', guild, answer.text)
+    return answer
+
+
 def require_rounds_playable(question: Question) -> None:
     """Raise ValueError when a queued round can no longer play the question."""
     rounds = (question.rounds.filter(started_at__isnull=True)
@@ -345,19 +401,20 @@ def require_rounds_playable(question: Question) -> None:
 
 def _given_fields(**values: str) -> dict[str, str]:
     """Return the fields a host filled in, in question add order."""
-    return {field: values.get(field, '') for field in EDITABLE_FIELDS
-            if values.get(field, '').strip()}
+    return {field: values[field] for field in EDITABLE_FIELDS
+            if values.get(field) is not None}
 
 
 def edit_question(guild: Guild, host_member: DiscordMember,
-                  pk: int | str, *, answer: str = '', artist: str = '',
-                  prompt: str = '', choices: str = '', year: str = '',
-                  album: str = '', media: str = '') -> dict:
-    """Change the fields a host filled in and return the new display label.
+                  pk: int | str, *, answer: str | None = None,
+                  artist: str | None = None, prompt: str | None = None,
+                  choices: str | None = None, year: str | None = None,
+                  album: str | None = None, media: str | None = None) -> dict:
+    """Change the fields given and return the new display label.
 
-    An empty field keeps its value, ``-`` drops it. Renaming an answer points the
-    question at an existing or new answer of the guild and leaves the old one to
-    the questions and rounds still using it.
+    A field left out keeps its value, a field given as an empty string is cleared.
+    Renaming an answer points the question at an existing or new answer of the guild
+    and leaves the old one to the questions and rounds still using it.
     """
     given = _given_fields(answer=answer, artist=artist, prompt=prompt,
                           choices=choices, year=year, album=album, media=media)
@@ -373,12 +430,8 @@ def edit_question(guild: Guild, host_member: DiscordMember,
 
 @transaction.atomic
 def _edit_question(guild: Guild, host_member: DiscordMember, question: Question,
-                   *, answer: str = '', artist: str = '', prompt: str = '',
-                   choices: str = '', year: str = '', album: str = '',
-                   media: str = '') -> Question:
+                   **given: str) -> Question:
     """Set the fields of a question a host has already been cleared for."""
-    given = _given_fields(answer=answer, artist=artist, prompt=prompt,
-                          choices=choices, year=year, album=album, media=media)
     columns = []
     for field in EDITABLE_FIELDS:
         if field in given:
@@ -400,7 +453,7 @@ def _apply_field(guild: Guild, host_member: DiscordMember, question: Question,
                  field: str, value: str) -> str | None:
     """Apply one field of a question in memory; return its column, if any."""
     text = value.strip()
-    drop = text == CLEAR_VALUE
+    drop = not text
     if field == 'answer':
         if drop:
             raise ValueError(_("A question needs an answer."))
@@ -938,6 +991,64 @@ def _query_library_choices(guild: Guild, text: str, limit: int) -> list[dict]:
             | Q(expected_answer__text__icontains=text)
             | Q(secondary_answer__text__icontains=text))
     return [question_option(question, guild) for question in queryset[:limit]]
+
+
+def question_row(question: Question) -> dict:
+    """Return one question of a library, as its library page shows it."""
+    return {'pk': question.pk,
+            'label': question_line(question, with_answer=True),
+            'prompt': question.prompt,
+            'answer': question.expected_answer.text,
+            'artist': (question.secondary_answer.text
+                       if question.secondary_answer else ''),
+            'year': question.year, 'album': question.album,
+            'media_url': question.media_url,
+            'variants': [variant.text
+                         for variant in question.expected_answer.variants.all()],
+            'choices': [choice.text for choice in question.choices.all()]}
+
+
+def own_questions(guild: Guild, text: str = '',
+                  limit: int = LIBRARY_PAGE_SIZE) -> list[dict]:
+    """Return the questions of a guild's own library, to fill and read."""
+    queryset = (Question.objects
+                .filter(guild=guild)
+                .select_related('expected_answer', 'secondary_answer')
+                .prefetch_related('choices', 'expected_answer__variants')
+                .order_by('expected_answer__text', 'pk'))
+    wanted = text.strip()
+    if wanted:
+        queryset = queryset.filter(Q(prompt__icontains=wanted)
+                                   | Q(expected_answer__text__icontains=wanted)
+                                   | Q(secondary_answer__text__icontains=wanted))
+    return [question_row(question) for question in queryset[:limit]]
+
+
+def unused_questions(guild: Guild,
+                     limit: int = LIBRARY_PAGE_SIZE) -> list[dict]:
+    """Return the questions of a guild's library that no game has played."""
+    queryset = (Question.objects
+                .filter(guild=guild, rounds__isnull=True)
+                .select_related('expected_answer', 'secondary_answer')
+                .prefetch_related('expected_answer__variants')
+                .order_by('expected_answer__text', 'pk')
+                .distinct())
+    return [question_row(question) for question in queryset[:limit]]
+
+
+def unused_answers(guild: Guild,
+                   limit: int = LIBRARY_PAGE_SIZE) -> list[dict]:
+    """Return the answers of a guild's library that no question uses."""
+    queryset = (Answer.objects
+                .filter(guild=guild, expected_for_questions__isnull=True,
+                        secondary_for_questions__isnull=True,
+                        choice_for_questions__isnull=True)
+                .prefetch_related('variants')
+                .order_by('text')
+                .distinct())
+    return [{'pk': answer.pk, 'text': answer.text,
+             'variants': [variant.text for variant in answer.variants.all()]}
+            for answer in queryset[:limit]]
 
 
 def round_display(round_: Round) -> dict:

@@ -1,0 +1,115 @@
+{% if state.round %}
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between gap-2">
+      <h3 class="h6 mb-0">Round {{ state.round.index }} — {{ state.round.type_label }}</h3>
+      <span class="badge text-bg-secondary">
+        {{ state.round.answers.answered }} answered
+      </span>
+    </div>
+    {% if state.round.prompt_set %}
+    <p class="mt-2 mb-1">{{ state.round.prompt }}</p>
+    {% else %}
+    <p class="mt-2 mb-1 text-body-secondary">{{ state.round.question_text }}</p>
+    {% endif %}
+    {% if state.round.media_url %}
+    <p class="mb-1">
+      <a href="{{ state.round.media_url }}" rel="noreferrer noopener">Listen</a>
+    </p>
+    {% endif %}
+    {% if state.round.is_revealed %}
+    <p class="mb-1"><strong>{{ state.round.answer_text }}</strong></p>
+    <p class="mb-0 small text-body-secondary">
+      {{ state.round.answers.right }} right.
+      {% if state.round.answers.right_names %}
+      {{ state.round.answers.right_names|join:", " }}.
+      {% endif %}
+    </p>
+    {% endif %}
+    {% if state.round.guessed %}
+    <p class="mb-0 small text-body-secondary">
+      You answered “{{ state.round.guessed_text }}”.
+      {% if state.round.guessed_secondary %}
+      Artist “{{ state.round.guessed_secondary }}”.
+      {% endif %}
+      {% if state.round.is_revealed %}
+      {% if state.round.guessed_correct or state.round.guessed_secondary_correct %}
+      It was right!
+      {% else %}
+      Not it.
+      {% endif %}
+      {% else %}
+      The answer comes when the host reveals the round.
+      {% endif %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% elif state.can_round %}
+<div class="card mb-3">
+  <div class="card-body">
+    <h3 class="h6 mb-1">No round open yet</h3>
+    <p class="mb-0 small text-body-secondary">
+      Open one to let the server play it.
+    </p>
+  </div>
+</div>
+{% endif %}
+
+{% if state.scores %}
+<div class="row g-3 mb-3">
+  <div class="col-md-6">
+    <h3 class="h6">Standings</h3>
+    <ul class="list-group">
+      {% for row in state.scores %}
+      <li class="list-group-item d-flex justify-content-between gap-2">
+        <span>{{ row.discord_name|default:row.username }}</span>
+        <span class="text-body-secondary">{{ row.points }} pt</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% if state.teams %}
+  <div class="col-md-6">
+    <h3 class="h6">Teams</h3>
+    <ul class="list-group">
+      {% for row in state.teams %}
+      <li class="list-group-item d-flex justify-content-between gap-2">
+        <span>{{ row.name }}</span>
+        <span class="text-body-secondary">{{ row.points }} pt</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if state.is_host %}
+<div class="d-flex gap-2 flex-wrap mb-4">
+  {% if state.can_publish %}
+  <form method="post" action="{% url 'webadmin:game_publish' guild.discord_id state.game_pk %}">
+    {% csrf_token %}
+    <button class="btn btn-primary" type="submit">Announce the quiz</button>
+  </form>
+  {% endif %}
+  {% if state.can_next %}
+  <form method="post" action="{% url 'webadmin:game_next' guild.discord_id state.game_pk %}">
+    {% csrf_token %}
+    <button class="btn btn-primary" type="submit">Open the next round</button>
+  </form>
+  {% endif %}
+  {% if state.can_reveal %}
+  <form method="post" action="{% url 'webadmin:game_reveal' guild.discord_id state.game_pk %}">
+    {% csrf_token %}
+    <button class="btn btn-outline-primary" type="submit">Reveal the round</button>
+  </form>
+  {% endif %}
+  {% if state.can_end %}
+  <form method="post" action="{% url 'webadmin:game_end' guild.discord_id state.game_pk %}">
+    {% csrf_token %}
+    <button class="btn btn-outline-danger" type="submit">End the quiz</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}

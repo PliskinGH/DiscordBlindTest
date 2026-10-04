@@ -48,15 +48,6 @@ python manage.py runserver    # Web admin
 python manage.py test         # test suite
 ```
 
-## Web admin
-
-`python manage.py runserver` serves the web admin at `/`; log in with Discord and open a server to see its running game.
-
-- The login uses the same Discord application as the bot, with the `identify` and `guilds` scopes.
-- It needs `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` and the registered `DISCORD_REDIRECT_URI` (the last env var is not mandatory as it can be rebuilt, but preferrable).
-- The dashboard lists only the servers the bot has a record of, with the possibility to add other servers or invite the bot to them.
-- Each server has a **library** its hosts fill with questions, answers and accepted variants, and **settings** its administrators manage: the channel its games are played in, the role they ping, and who may host.
-
 ## Slash commands
 
 | Command | Description |
@@ -127,7 +118,7 @@ python manage.py test         # test suite
 
 - A game change that has to be announced, opened, answered or ended is recorded as a **broadcast**, posted by the bot holding the Discord connection:
   - The slash commands and their controls post the broadcast they just recorded.
-  - A caller without a connection records it only, and the bot posts it on its next pass.
+  - A caller without a connection (see [Web admin](#web-admin) section) records it only, and the bot posts it on its next pass.
   - Every broadcast is made exactly once, whichever client claims it first.
 
 - Questions and answers belong to a server, or to the global library when their guild is empty:
@@ -180,3 +171,17 @@ Any host able to run PostgreSQL (or any compatible database, since Django ORM is
 - `SECRET_KEY` is required as soon as `DEBUG` is off, which is the default, so set it with `ALLOWED_HOSTS` (space-separated) before the first build.
 - `DATABASE_URL` is read by `dj-database-url`, so a database add-on of the host is enough (e.g. on dokku: `dokku postgres:create` and `dokku postgres:link`).
 - `REDIS_URL` is optional and read as is by Django's Redis cache backend: you can set it via your host (e.g. on dokku: `dokku redis:create`, then `dokku redis:link`), and it is what makes one cache shared by the `web` and `worker` processes.
+
+## Web admin
+
+The web process offers an alternative interface (mainly for hosts, but can also be used by players): log in with Discord and open a server to see its running game.
+
+- The login uses the same Discord application as the bot, with the `identify` and `guilds` scopes.
+- It needs `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` and the registered `DISCORD_REDIRECT_URI` (the last env var is not mandatory as it can be rebuilt, but preferrable).
+- The dashboard lists only the servers the bot has a record of, with the possibility to add other servers or invite the bot to them.
+- Each server has a **library** its hosts fill with questions, answers and accepted variants, and **settings** its administrators manage: the channel its games are played in, the role they ping, and who may host.
+- Each server has a **control room** where its hosts run a game from the browser, and every member of the server answers from theirs:
+  - Feature parity with the discord bot, with the host controls and also the guess from the players.
+  - Every change is recorded as a **broadcast** and posted by the bot holding the Discord connection, so everything is posted on the Discord channel even if acted from the web.
+  - The live parts of the control room and of the answer page follow the game with [htmx](https://htmx.org): the round, the number of answers and the standings update by themselves, so an answer given in Discord shows up without reloading.
+  - Questions to queue and games to copy from are searched server-side. The search needs a cache shared by every process that serves the web admin: set `REDIS_URL` in production, since the in-memory cache of a single worker will not answer a search another worker is asked for.

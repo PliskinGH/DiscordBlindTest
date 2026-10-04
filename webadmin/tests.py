@@ -7,13 +7,14 @@ from django.core.cache import cache
 from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
 
-from blindtest.models import Question
-
+from blindtest import constants
 from blindtest import services
+from blindtest.models import (Broadcast, Game, Guess, Question, QuizType,
+                             ScoringMode)
 from discordcore.members import LocalMember, LocalPermissions, LocalRole
 from discordcore.models import Guild, Host, Player
 
-from . import discord_api
+from . import discord_api, forms
 
 ACCOUNT = {'id': '42', 'username': 'hostie'}
 GUILDS = [{'id': '7', 'name': 'Server Seven',
@@ -693,3 +694,531 @@ class AddGuildTests(CacheTestCase):
         response = self.client.post(reverse('webadmin:guild_add', args=[10]))
         self.assertRedirects(response, reverse('webadmin:dashboard'))
         self.assertFalse(Guild.objects.filter(discord_id=10).exists())
+
+
+class GameControlTests(CacheTestCase):
+    """A host runs a game from the browser, and everyone answers from theirs."""
+
+    def setUp(self):
+        super().setUp()
+        self.host_player = Player.objects.create_user(
+            username='hostie', email='hostie@example.com',
+            discord_user_id=42, discord_name='hostie')
+        self.guest = Player.objects.create_user(
+            username='guestie', email='guestie@example.com',
+            discord_user_id=43, discord_name='guestie')
+        self.client.force_login(self.host_player)
+        self.guild = Guild.objects.create(discord_id=7, name='Server Seven')
+        session = self.client.session
+        session[discord_api.USER_SESSION_KEY] = {'id': 42, 'username': 'hostie'}
+        session[discord_api.GUILDS_SESSION_KEY] = [
+            {'id': 7, 'name': 'Server Seven',
+             'permissions': discord_api.MANAGE_GUILD}]
+        session.save()
+        self.host = Host.objects.create(guild=self.guild, mention='<@42>')
+        self.member = LocalMember(id=42, name='hostie')
+        for name, given in (('fetch_bot_channels',
+                             [{'id': 555, 'label': '#quiz-lounge'}]),
+                            ('fetch_bot_roles',
+                             [{'id': 99, 'label': '@Quizmaster'}])):
+            patcher = mock.patch(f'webadmin.discord_api.{name}',
+                                 return_value=given)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _question(self, text='Wonderwall', artist='', prompt='Guess it'):
+        """Return a question of this server, playable as a blind test round."""
+        question = self.guild.questions.create(
+            prompt=prompt, expected_answer=self.guild.answers.create(text=text),
+            secondary_answer=(self.guild.answers.create(text=artist)
+                              if artist else None))
+        return question
+
+    def _choice_question(self):
+        """Return a question whose expected answer is one of its choices."""
+        question = self._question()
+        other = self.guild.answers.create(text='Yesterday')
+        question.choices.add(question.expected_answer, other)
+        return question
+
+    def _game(self, state=Game.State.RUNNING, quiz_type=QuizType.BLIND_TEST):
+        """Return a game of this server, created the way Discord creates one."""
+        return services.create_game(self.guild, 555, self.member,
+                                    quiz_type=quiz_type, state=state)
+
+    def _queue(self, game, question):
+        """Queue one question of the game."""
+        return services.queue_questions(game, self.member, [question.pk])
+
+    def _url(self, name, *args) -> str:
+        """Return a control room route of this server."""
+        return reverse(f'webadmin:{name}', args=[7, *args])
+
+    def _as_guest(self) -> None:
+        """Log in as a member of the server who holds no host rights."""
+        self.host.delete()
+        self.client.force_login(self.guest)
+        session = self.client.session
+        session[discord_api.USER_SESSION_KEY] = {'id': 43, 'username': 'guestie'}
+        session[discord_api.GUILDS_SESSION_KEY] = [
+            {'id': 7, 'name': 'Server Seven', 'permissions': 0}]
+        session.save()
+
+    def _setup_data(self, **over) -> dict:
+        """Return the fields the setup form is submitted with."""
+        return {'channel_id': '555', 'ping_role_id': '', 'name': '',
+                'quiz_type': QuizType.BLIND_TEST,
+                'scoring_mode': ScoringMode.STANDARD} | over
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_host_sets_a_quiz_up_without_announcing_it(self, roles):
+        response = self.client.post(self._url('game_setup'),
+                                    self._setup_data(name='Friday quiz'))
+        game = Game.objects.get()
+        self.assertRedirects(response, self._url('game', game.pk))
+        self.assertEqual(game.state, Game.State.SETUP)
+        self.assertEqual(game.channel_id, 555)
+        self.assertEqual(game.name, 'Friday quiz')
+        # Nothing is owed to the server: no round opened, no game published.
+        self.assertEqual(Broadcast.objects.count(), 0)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_announced_quiz_leaves_a_post_to_the_worker(self, roles):
+        game = self._game(state=Game.State.SETUP)
+        self.client.post(self._url('game_publish', game.pk))
+        game.refresh_from_db()
+        self.assertEqual(game.state, Game.State.RUNNING)
+        [broadcast] = Broadcast.objects.all()
+        self.assertEqual(broadcast.kind, Broadcast.Kind.ANNOUNCE)
+        # The worker claims whatever a caller without a client recorded.
+        self.assertEqual(broadcast.status, Broadcast.Status.PENDING)
+        self.assertIn(broadcast, services.pending_broadcasts())
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_next_round_leaves_a_post_to_the_worker(self, roles):
+        question = self._question()
+        game = self._game()
+        self._queue(game, question)
+        self.client.post(self._url('game_next', game.pk))
+        round_ = services.current_round(game)
+        self.assertEqual(round_.question, question)
+        [broadcast] = Broadcast.objects.all()
+        self.assertEqual(broadcast.round, round_)
+        self.assertEqual(broadcast.status, Broadcast.Status.PENDING)
+        self.assertIn(broadcast, services.pending_broadcasts())
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_worker_can_take_the_post_the_browser_recorded(self, roles):
+        game = self._game()
+        self._queue(game, self._question())
+        self.client.post(self._url('game_next', game.pk))
+        broadcast = Broadcast.objects.get()
+        self.assertTrue(services.claim_broadcast(broadcast.pk))
+        self.assertNotIn(broadcast, services.pending_broadcasts())
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_host_reveals_the_round_in_play(self, roles):
+        game = self._game()
+        self._queue(game, self._question())
+        self.client.post(self._url('game_next', game.pk))
+        self.client.post(self._url('game_reveal', game.pk))
+        round_ = services.current_round(game)
+        self.assertTrue(round_.is_revealed)
+        self.assertEqual(
+            Broadcast.objects.get(kind=Broadcast.Kind.REVEAL).status,
+            Broadcast.Status.PENDING)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_host_ends_the_quiz_and_its_scores_are_still_owed(self, roles):
+        game = self._game()
+        self.client.post(self._url('game_end', game.pk))
+        game.refresh_from_db()
+        self.assertEqual(game.state, Game.State.FINISHED)
+        self.assertEqual(Broadcast.objects.get().kind, Broadcast.Kind.RECAP)
+        self.assertIsNone(services.active_game(self.guild))
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_second_round_refuses_one_that_is_still_open(self, roles):
+        game = self._game()
+        self._queue(game, self._question())
+        self.client.post(self._url('game_next', game.pk))
+        response = self.client.post(self._url('game_next', game.pk), follow=True)
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_control_room_queues_and_drops_questions(self, roles):
+        game = self._game()
+        question = self._question()
+        self.client.post(self._url('game_queue', game.pk),
+                         {'questions': [question.pk], 'quiz_type': ''})
+        queued = game.rounds.get()
+        self.assertEqual(queued.question, question)
+        self.client.post(self._url('game_unqueue', game.pk),
+                         {'rounds': [queued.pk]})
+        self.assertEqual(game.rounds.count(), 0)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_host_clears_the_whole_queue(self, roles):
+        game = self._game()
+        self._queue(game, self._question())
+        self.client.post(self._url('game_unqueue', game.pk), {'action': 'clear'})
+        self.assertEqual(game.rounds.count(), 0)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_host_copies_the_questions_of_another_game(self, roles):
+        question = self._question()
+        past = self._game()
+        self._queue(past, question)
+        services.close_game(past, self.member)
+        game = self._game()
+        self.client.post(self._url('game_copy', game.pk),
+                         {'source': past.pk, 'quiz_type': ''})
+        self.assertEqual(game.rounds.get().question, question)
+
+    def _running_round(self, variant: str = '', artist: str = '') -> Game:
+        """Return a game with its first round open, and its question."""
+        question = self._question(artist=artist)
+        if variant:
+            question.expected_answer.variants.create(text=variant)
+        game = self._game()
+        self._queue(game, question)
+        self.client.post(self._url('game_next', game.pk))
+        return game
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_member_answers_the_round_from_the_browser(self, roles):
+        game = self._running_round(artist='Oasis')
+        self._as_guest()
+        response = self.client.post(self._url('game_guess', game.pk),
+                                    {'answer': 'Wonderwall', 'artist': 'Oasis'})
+        guess = services.guess_of(services.current_round(game), self.guest)
+        self.assertTrue(guess.text_correct)
+        self.assertTrue(guess.secondary_correct)
+        self.assertContains(response, 'Wonderwall')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_variant_counts_as_the_right_answer(self, roles):
+        game = self._running_round(variant='Wonderwall (Live)')
+        self._as_guest()
+        self.client.post(self._url('game_guess', game.pk),
+                         {'answer': 'Wonderwall (Live)', 'artist': ''})
+        self.assertTrue(services.guess_of(services.current_round(game),
+                                          self.guest).text_correct)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_wrong_answer_is_scored_wrong(self, roles):
+        game = self._running_round()
+        self._as_guest()
+        self.client.post(self._url('game_guess', game.pk),
+                         {'answer': 'Yesterday', 'artist': ''})
+        self.assertFalse(services.guess_of(services.current_round(game),
+                                           self.guest).text_correct)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_multiple_choice_round_is_answered_with_a_pick(self, roles):
+        question = self._choice_question()
+        game = self._game(quiz_type=QuizType.MULTIPLE_CHOICE)
+        self._queue(game, question)
+        self.client.post(self._url('game_next', game.pk))
+        self._as_guest()
+        choice = question.choices.get(text='Wonderwall')
+        response = self.client.post(self._url('game_guess', game.pk),
+                                    {'choice': choice.pk, 'artist': ''})
+        self.assertTrue(services.guess_of(services.current_round(game),
+                                          self.guest).text_correct)
+        self.assertContains(response, 'You answered')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_second_answer_is_refused(self, roles):
+        game = self._running_round()
+        self._as_guest()
+        url = self._url('game_guess', game.pk)
+        self.client.post(url, {'answer': 'One', 'artist': ''})
+        response = self.client.post(url, {'answer': 'Other', 'artist': ''},
+                                    follow=True)
+        self.assertContains(response, 'already answered this round')
+        self.assertEqual(Guess.objects.count(), 1)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_games_page_lists_the_games_of_the_server(self, roles):
+        game = self._game()
+        response = self.client.get(reverse('webadmin:games', args=[7]))
+        self.assertContains(response, self._url('game', game.pk))
+        self.assertContains(response, 'Set up a quiz')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_an_empty_answer_is_refused(self, roles):
+        game = self._running_round()
+        self._as_guest()
+        response = self.client.post(self._url('game_guess', game.pk),
+                                    {'answer': ' ', 'artist': ''}, follow=True)
+        self.assertContains(response, 'Give at least an answer.')
+        self.assertEqual(Guess.objects.count(), 0)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_there_is_nothing_to_answer_before_a_round_opens(self, roles):
+        game = self._game()
+        self._as_guest()
+        response = self.client.post(self._url('game_guess', game.pk),
+                                    {'answer': 'Wonderwall', 'artist': ''})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], reverse('webadmin:guild', args=[7]))
+        self.assertEqual(Guess.objects.count(), 0)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_revealed_round_is_no_longer_answered(self, roles):
+        game = self._running_round()
+        self.client.post(self._url('game_reveal', game.pk))
+        self._as_guest()
+        response = self.client.post(self._url('game_guess', game.pk),
+{'answer': 'Wonderwall', 'artist': ''},
+                                    follow=True)
+        self.assertContains(response, 'No round is open to answer right now')
+        self.assertEqual(Guess.objects.count(), 0)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_live_part_counts_the_answers_the_browser_took(self, roles):
+        game = self._running_round()
+        self._as_guest()
+        self.client.post(self._url('game_guess', game.pk),
+                         {'answer': 'Wonderwall', 'artist': ''})
+        state = services.control_state(game)
+        self.assertEqual(state['round']['answers']['answered'], 1)
+        # The count a host reads, and the one a player reads, are the same read.
+        self.assertEqual(state['round']['answers']['answered'],
+                         services.round_answers(
+                             services.current_round(game))['answered'])
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_plain_member_answers_but_drives_nothing(self, roles):
+        game = self._running_round()
+        self._as_guest()
+        self.assertEqual(self.client.get(self._url('game_guess', game.pk))
+                         .status_code, 200)
+        self.assertEqual(self.client.get(reverse('webadmin:games', args=[7]))
+                         .status_code, 403)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_plain_member_polls_the_live_part_of_a_game(self, roles):
+        game = self._running_round()
+        self._as_guest()
+        page = self.client.get(self._url('game_guess', game.pk))
+        live_url = self._url('game_live', game.pk)
+        self.assertContains(page, live_url)
+        live = self.client.get(live_url)
+        self.assertEqual(live.status_code, 200)
+        self.assertContains(live, '0 answered')
+        # The host controls are not a member's to press.
+        self.assertNotContains(live, 'Reveal the round')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_an_answer_given_in_discord_reaches_the_polling_page(self, roles):
+        game = self._running_round()
+        self._as_guest()
+        live_url = self._url('game_live', game.pk)
+        self.assertContains(self.client.get(live_url), '0 answered')
+        # The bot records the answer; the browser posted nothing.
+        services.submit_guess(services.current_round(game), self.guest,
+                              'Wonderwall', '')
+        self.assertContains(self.client.get(live_url), '1 answered')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_poll_asks_discord_nothing(self, roles):
+        # A page polls every two seconds, so the roles must come from the
+        # session rather than from a request to Discord on each one.
+        game = self._running_round()
+        with mock.patch('webadmin.discord_api.fetch_member_roles',
+                        side_effect=AssertionError('Discord was asked')) as asked:
+            self.client.get(self._url('game_live', game.pk))
+            self.client.get(self._url('game_live', game.pk))
+        self.assertEqual(asked.call_count, 0)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_control_room_polls_its_own_live_part(self, roles):
+        game = self._running_round()
+        page = self.client.get(self._url('game', game.pk))
+        self.assertContains(page, self._url('game_state', game.pk))
+        self.assertContains(self.client.get(self._url('game_state', game.pk)),
+                            'Reveal the round')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_stranger_drives_no_game(self, roles):
+        game = self._game()
+        self._as_guest()
+        for name in ('game', 'game_state', 'game_publish', 'game_queue',
+                     'game_unqueue', 'game_copy', 'game_next', 'game_reveal',
+                     'game_end'):
+            with self.subTest(route=name):
+                response = self.client.post(self._url(name, game.pk), {})
+                self.assertEqual(response.status_code, 403)
+        self.assertEqual(game.rounds.count(), 0)
+        self.assertEqual(game.state, Game.State.RUNNING)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_server_the_player_is_not_in_is_not_reached(self, roles):
+        game = self._running_round()
+        session = self.client.session
+        session[discord_api.GUILDS_SESSION_KEY] = []
+        session.save()
+        self.assertEqual(self.client.get(self._url('game', game.pk))
+                         .status_code, 404)
+        self.assertEqual(self.client.get(self._url('game_guess', game.pk))
+                         .status_code, 404)
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_control_room_renders_and_follows_the_game(self, roles):
+        game = self._running_round()
+        page = self.client.get(self._url('game', game.pk))
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, '0 answered')
+        state_url = self._url('game_state', game.pk)
+        self.assertContains(page, state_url)
+        self.assertContains(self.client.get(state_url), '0 answered')
+        # A host answering their own round is what the live part follows.
+        self.client.post(self._url('game_guess', game.pk),
+                         {'answer': 'Wonderwall', 'artist': ''})
+        state = services.control_state(game)
+        self.assertEqual(state['round']['answers']['answered'], 1)
+        self.assertContains(self.client.get(state_url), '1 answered')
+
+    def _field_id(self, response, form_id: str) -> str:
+        """Return the signed id a picker page carries for its own search."""
+        page = response.content.decode()
+        match = re.search(rf'id="{form_id}"[^>]*?data-field_id="([^"]+)"',
+                          page, re.S)
+        if match is None:
+            match = re.search(rf'data-field_id="([^"]+)"[^>]*?id="{form_id}"',
+                              page, re.S)
+        self.assertIsNotNone(match, f'{form_id} is not a search picker')
+        return match.group(1)
+
+    def _search(self, game, field_id: str, term: str = ''):
+        """Ask the picker of a game for the options matching a term."""
+        return self.client.get(self._url('game_search', game.pk),
+                               {'field_id': field_id, 'term': term})
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_queue_picker_searches_the_questions_the_game_may_queue(self, roles):
+        game = self._game()
+        queued = self._question(text='Yesterday')
+        wanted = self._question(text='Wonderwall')
+        self._queue(game, queued)
+        page = self.client.get(self._url('game', game.pk))
+        results = self._search(game, self._field_id(page, 'queue_questions'),
+                               'Wonderwall').json()['results']
+        self.assertEqual([row['id'] for row in results], [wanted.pk])
+        self.assertEqual(results[0]['text'], 'Guess it — answer: Wonderwall')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_search_never_offers_a_question_of_another_server(self, roles):
+        game = self._game()
+        other = Guild.objects.create(discord_id=8, name='Other Server')
+        foreign = other.questions.create(
+            prompt='Guess it',
+            expected_answer=other.answers.create(text='Wonderwall'))
+        page = self.client.get(self._url('game', game.pk))
+        results = self._search(game, self._field_id(page, 'queue_questions'),
+                               'Wonderwall').json()['results']
+        self.assertNotIn(foreign.pk, [row['id'] for row in results])
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_search_offers_no_question_the_game_already_queued(self, roles):
+        game = self._game()
+        question = self._question()
+        self._queue(game, question)
+        page = self.client.get(self._url('game', game.pk))
+        results = self._search(game, self._field_id(page, 'queue_questions'),
+                               'Wonderwall').json()['results']
+        self.assertEqual(results, [])
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_copy_picker_searches_the_past_games_of_the_server(self, roles):
+        past = self._game()
+        past.name = 'Friday quiz'
+        past.save(update_fields=['name'])
+        services.close_game(past, self.member)
+        game = self._game()
+        page = self.client.get(self._url('game', game.pk))
+        results = self._search(game, self._field_id(page, 'copy_source'),
+                               'Friday').json()['results']
+        self.assertEqual([row['id'] for row in results], [past.pk])
+        self.assertIn('Friday quiz', results[0]['text'])
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_search_is_opened_by_the_members_of_the_server_only(self, roles):
+        game = self._game()
+        page = self.client.get(self._url('game', game.pk))
+        field_id = self._field_id(page, 'queue_questions')
+        self._as_guest()
+        self.assertEqual(self._search(game, field_id, 'Wonderwall').status_code,
+                         200)
+        session = self.client.session
+        session[discord_api.GUILDS_SESSION_KEY] = []
+        session.save()
+        self.assertEqual(self._search(game, field_id, 'Wonderwall').status_code,
+                         404)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_control_room_loads_the_assets_of_its_pickers(self, roles):
+        game = self._game()
+        page = self.client.get(self._url('game', game.pk))
+        self.assertContains(page, 'django_select2/django_select2.js')
+        self.assertContains(page, self._url('game_search', game.pk))
+
+    def test_every_picker_stretches_to_the_width_of_its_column(self):
+        # A select2 widget otherwise renders narrower than the crispy column.
+        for widget in (forms.SearchWidget(), forms.QuestionWidget(),
+                       forms.GameWidget()):
+            with self.subTest(widget=type(widget).__name__):
+                self.assertEqual(widget.attrs['style'], 'width : 100%')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_question_past_the_first_ones_can_be_queued(self, roles):
+        game = self._game()
+        last = self._question(text='Zebra')
+        for index in range(constants.MAX_CHOICES):
+            self._question(text=f'Filler {index}')
+        page = self.client.get(self._url('game', game.pk))
+        self._search(game, self._field_id(page, 'queue_questions'), 'Zebra')
+        self.client.post(self._url('game_queue', game.pk),
+                         {'questions': [last.pk], 'quiz_type': ''})
+        self.assertEqual(game.rounds.get().question, last)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_live_part_reads_little(self, roles):
+        # The page polls every two seconds, so its read must stay small.
+        game = self._running_round()
+        self.client.get(self._url('game_state', game.pk))
+        with self.assertNumQueries(15):
+            self.client.get(self._url('game_state', game.pk))
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_revealed_game_shows_its_standings(self, roles):
+        game = self._running_round()
+        self.client.post(self._url('game_guess', game.pk),
+                         {'answer': 'Wonderwall', 'artist': ''})
+        self.client.post(self._url('game_end', game.pk))
+        response = self.client.get(self._url('game', game.pk))
+        self.assertContains(response, 'Standings')
+        self.assertContains(response, 'hostie')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_game_cannot_be_set_up_while_another_one_runs(self, roles):
+        self._game()
+        response = self.client.post(self._url('game_setup'),
+                                    self._setup_data(), follow=True)
+        self.assertContains(response, 'already running')
+        self.assertEqual(Game.objects.count(), 1)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_setup_without_a_type_is_refused(self, roles):
+        response = self.client.post(self._url('game_setup'),
+                                    self._setup_data(quiz_type=''), follow=True)
+        self.assertContains(response, 'This field is required.')
+        self.assertEqual(Game.objects.count(), 0)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_game_of_another_server_is_not_found(self, roles):
+        other = Guild.objects.create(discord_id=8, name='Other Server')
+        admin = LocalMember(id=42, name='hostie',
+                            guild_permissions=LocalPermissions(manage_guild=True))
+        foreign = services.create_game(other, 555, admin)
+        self.assertEqual(self.client.get(self._url('game', foreign.pk))
+                         .status_code, 404)

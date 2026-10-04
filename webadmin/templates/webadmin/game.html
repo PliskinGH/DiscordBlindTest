@@ -1,0 +1,92 @@
+{% extends 'webadmin/base.html' %}
+{% load crispy_forms_tags %}
+{% block title %}{{ state.game_name }} — control room{% endblock %}
+{% block media %}{{ queue_form.media }}{{ copy_form.media }}{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'webadmin:guild' guild.discord_id %}">{{ guild.name }}</a></li>
+    <li class="breadcrumb-item"><a href="{% url 'webadmin:games' guild.discord_id %}">Games</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ state.game_name }}</li>
+  </ol>
+</nav>
+
+<h1 class="h4">{{ state.game_name }}</h1>
+<p class="text-body-secondary mb-4">
+  {{ state.type_label }} — {{ state.state_label }} —
+  {{ state.rounds }} round(s), {{ state.queued }} queued.
+  <a href="{{ guess_url }}">Answer from the browser</a>
+</p>
+
+<div id="game-live"
+     hx-get="{{ state_url }}"
+     hx-trigger="every 2s"
+     hx-swap="innerHTML">
+  {% include 'webadmin/_game_state.html' %}
+</div>
+
+<div class="accordion" id="game-forms">
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button" type="button" data-bs-toggle="collapse"
+              data-bs-target="#queue-questions">Queue questions</button>
+    </h2>
+    <div id="queue-questions" class="accordion-collapse collapse"
+         data-bs-parent="#game-forms">
+      <div class="accordion-body">
+        {% if state.can_queue %}
+        {% crispy queue_form %}
+        {% else %}
+        <p class="text-body-secondary">This quiz is over.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button" type="button" data-bs-toggle="collapse"
+              data-bs-target="#drop-questions">Drop queued questions</button>
+    </h2>
+    <div id="drop-questions" class="accordion-collapse collapse"
+         data-bs-parent="#game-forms">
+      <div class="accordion-body">
+        <form method="post"
+              action="{% url 'webadmin:game_unqueue' guild.discord_id state.game_pk %}">
+          {% csrf_token %}
+          {% for value, label in unqueue_form.fields.rounds.choices %}
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="rounds"
+                   value="{{ value }}" id="unqueue-{{ value }}">
+            <label class="form-check-label" for="unqueue-{{ value }}">{{ label }}</label>
+          </div>
+          {% endfor %}
+          <button class="btn btn-outline-danger btn-sm mt-2" type="submit">
+            {{ unqueue_form.submit_label }}
+          </button>
+        </form>
+        <form class="mt-2" method="post"
+              action="{% url 'webadmin:game_unqueue' guild.discord_id state.game_pk %}">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="clear">
+          <button class="btn btn-outline-danger btn-sm" type="submit">
+            Drop the whole queue
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button"
+              data-bs-toggle="collapse" data-bs-target="#copy-questions">
+        Copy questions of another game</button>
+    </h2>
+    <div id="copy-questions" class="accordion-collapse collapse"
+         data-bs-parent="#game-forms">
+      <div class="accordion-body">
+        {% crispy copy_form %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

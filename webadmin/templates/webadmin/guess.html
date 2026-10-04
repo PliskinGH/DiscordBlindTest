@@ -1,0 +1,27 @@
+{% extends 'webadmin/base.html' %}
+{% load crispy_forms_tags %}
+{% block title %}{{ game.display_name }} — answer{% endblock %}
+{% block media %}{{ form.media }}{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'webadmin:guild' guild.discord_id %}">{{ guild.name }}</a></li>
+    <li class="breadcrumb-item"><a href="{% url 'webadmin:games' guild.discord_id %}">Games</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Answer</li>
+  </ol>
+</nav>
+
+<h1 class="h4">{{ game.display_name }}</h1>
+<p class="text-body-secondary mb-4">Answer the round in play.</p>
+
+<div id="game-live"
+     hx-get="{% url 'webadmin:game_live' guild.discord_id game.pk %}"
+     hx-trigger="every 2s"
+     hx-swap="innerHTML">
+  {% include 'webadmin/_game_state.html' %}
+</div>
+
+{% if not state.round.guessed %}
+{% crispy form %}
+{% endif %}
+{% endblock %}

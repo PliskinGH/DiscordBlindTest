@@ -13,6 +13,8 @@
   {% if is_host %}
   <a class="btn btn-sm btn-outline-primary"
      href="{% url 'webadmin:library' guild.discord_id %}">Library</a>
+  <a class="btn btn-sm btn-outline-primary"
+     href="{% url 'webadmin:games' guild.discord_id %}">Games</a>
   {% endif %}
   {% if is_admin %}
   <a class="btn btn-sm btn-outline-secondary"
@@ -21,7 +23,10 @@
 </p>
 <h2 class="h5">Current game</h2>
 {% if active_game %}
-<p>{{ active_game.display_name }} — {{ active_game.state_label }}</p>
+<p>
+  <a href="{% url 'webadmin:game' guild.discord_id active_game.pk %}">{{ active_game.display_name }}</a>
+  — {{ active_game.state_label }}
+</p>
 {% else %}
 <p class="text-body-secondary">No game is running.</p>
 {% endif %}

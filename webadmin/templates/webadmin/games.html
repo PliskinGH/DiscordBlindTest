@@ -1,0 +1,64 @@
+{% extends 'webadmin/base.html' %}
+{% load crispy_forms_tags %}
+{% block title %}{{ guild.name }} — games{% endblock %}
+{% block media %}{{ setup_form.media }}{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'webadmin:guild' guild.discord_id %}">{{ guild.name }}</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Games</li>
+  </ol>
+</nav>
+
+<h1 class="h4">Games</h1>
+
+<div class="accordion mb-4" id="game-forms">
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button" type="button" data-bs-toggle="collapse"
+              data-bs-target="#setup-game">Set up a quiz</button>
+    </h2>
+    <div id="setup-game" class="accordion-collapse collapse"
+         data-bs-parent="#game-forms">
+      <div class="accordion-body">
+        <p class="text-body-secondary">
+          Setting a quiz up announces nothing. It opens the first round only
+          once you announce it.
+        </p>
+        {% if active %}
+        <p class="mb-0">
+          <a href="{% url 'webadmin:game' guild.discord_id active.pk %}">
+            Finish {{ active.display_name }} before setting another quiz up.
+          </a>
+        </p>
+        {% else %}
+        {% crispy setup_form %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if active %}
+<p class="mb-4">
+  <a href="{% url 'webadmin:game' guild.discord_id active.pk %}">{{ active.display_name }}</a>
+  — {{ active.state_label }}
+</p>
+{% else %}
+<p class="mb-4 text-body-secondary">No game is running in this server.</p>
+{% endif %}
+
+{% if games %}
+<ul class="list-group mb-4">
+  {% for game in games %}
+  <li class="list-group-item d-flex justify-content-between gap-2 flex-wrap">
+    <a href="{% url 'webadmin:game' guild.discord_id game.pk %}">{{ game.game_name }}</a>
+    <span class="text-body-secondary small">
+      {{ game.questions }} question(s) — {{ game.state_label }}
+    </span>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% endblock %}

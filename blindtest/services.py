@@ -515,6 +515,24 @@ def active_game(guild: Guild) -> Game | None:
             .exclude(state=Game.State.FINISHED).first())
 
 
+def game_by_pk(guild: Guild, game_pk: int) -> Game:
+    """Return the game of a guild, refusing one belonging to another server."""
+    game = (Game.objects.filter(guild=guild, pk=game_pk)
+            .select_related('host').first())
+    if game is None:
+        raise ValueError(_("This quiz is not one of this server."))
+    return game
+
+
+def game_rows(guild: Guild, limit: int = LIBRARY_PAGE_SIZE) -> list[dict]:
+    """Return the games of a guild as the control room lists them."""
+    return [{'pk': game.pk, 'game_name': game.display_name,
+             'state': game.state, 'state_label': game.state_label,
+             'questions': game.questions, 'created_at': game.created_at,
+             'finished_at': game.finished_at, 'channel_id': game.channel_id}
+            for game in _annotated_games(guild)[:limit]]
+
+
 def create_game(guild: Guild, channel_id: int | None, host_member: DiscordMember,
                 scoring_mode: str = ScoringMode.STANDARD, *,
                 name: str = '', quiz_type: str = QuizType.BLIND_TEST,
@@ -782,12 +800,16 @@ def _render_game_options(guild: Guild) -> list[dict] | bool:
             for game in rows]
 
 
-def _query_game_choices(guild: Guild, current: Game | None, text: str,
-                        limit: int) -> list[dict]:
-    """Return a guild's game options straight from the database."""
+def copyable_games(guild: Guild, current: Game | None = None):
+    """Return the games of a guild a host may copy questions from."""
     games = _annotated_games(guild)
-    if current is not None:
-        games = games.exclude(pk=current.pk)
+    return games.exclude(pk=current.pk) if current is not None else games
+
+
+def _query_game_choices(guild: Guild, current: Game | None, text: str,
+                         limit: int) -> list[dict]:
+    """Return a guild's game options straight from the database."""
+    games = copyable_games(guild, current)
     if text.strip():
         games = games.filter(name__icontains=text.strip())
     return [{'pk': game.pk, 'label': game_option(game, game.questions)}
@@ -949,10 +971,15 @@ def question_choices(game: Game, text: str = '',
             and (not wanted or wanted in option['label'].casefold())][:limit]
 
 
+def queueable_questions(game: Game):
+    """Return the questions a game has not queued or played yet."""
+    return _visible_questions(game.guild).exclude(
+        pk__in=game.rounds.values('question'))
+
+
 def _query_question_choices(game: Game, text: str, limit: int) -> list[dict]:
     """Return the unplayed options of a game straight from the database."""
-    queryset = _visible_questions(game.guild).exclude(
-        pk__in=game.rounds.values('question'))
+    queryset = queueable_questions(game)
     text = text.strip()
     if text:
         queryset = queryset.filter(
@@ -1369,3 +1396,51 @@ def game_team_scores(game: Game,
             if guess.team_id in totals:
                 totals[guess.team_id]['points'] += points.get(guess.pk, 0)
     return sorted(totals.values(), key=lambda row: (-row['points'], row['name']))
+
+
+def guess_of(round_: Round, player: Player) -> Guess | None:
+    """Return what the player answered in a round, if they answered at all."""
+    return round_.guesses.filter(player=player).first()
+
+
+def control_state(game: Game, player: Player | None = None) -> dict:
+    """Return everything the control room of a game shows at one moment.
+
+    The round in play with its display values and its answers, the queue, and
+    the standings. Built from the same reads the embeds are built from, so what
+    a host sees in the browser and what the server was told cannot disagree.
+    The rounds are read once and scored from that read: the control room of a
+    live game is polled every couple of seconds.
+    """
+    round_ = current_round(game)
+    rounds = _scored_rounds(game)
+    state = {**game_summary(game), 'game_pk': game.pk, 'state': game.state,
+             'state_label': game.state_label, 'queued': queued_count(game),
+             'rounds': len(rounds), 'has_teams': game.teams.exists(),
+             'can_publish': game.is_preparing,
+             'can_round': game.is_running,
+             'can_next': (game.is_running
+                          and (round_ is None or round_.is_revealed)),
+             'can_reveal': round_ is not None and round_.is_active,
+             'can_queue': game.is_active,
+             'can_end': game.state != Game.State.FINISHED}
+    standings = {'scores': game_scores(game, rounds),
+                 'teams': game_team_scores(game, rounds)
+                 if state['has_teams'] else []}
+    if round_ is None:
+        return {**state, 'round': None, **standings}
+    display = round_display(round_)
+    guess = None if player is None else guess_of(round_, player)
+    return {**state, **standings,
+            'round': {**display, 'is_active': round_.is_active,
+                      'answers': round_answers(round_),
+                      'form': answer_form(display),
+                      'guessed': guess is not None,
+                      'guessed_text': guess.text if guess is not None else '',
+                      'guessed_secondary': (guess.secondary_text
+                                            if guess is not None else ''),
+                      'guessed_correct': (bool(guess.text_correct)
+                                          if guess is not None else False),
+                      'guessed_secondary_correct': (
+                          bool(guess.secondary_correct)
+                          if guess is not None else False)}}

@@ -3,12 +3,55 @@
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import HTML, Div, Submit
 from django import forms
+from django.urls import reverse
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 from django_select2 import forms as select2_forms
 
-from blindtest.constants import MAX_YEAR
-from blindtest.services import split_answers
+from blindtest import services
+from blindtest.constants import MAX_CHOICES, MAX_YEAR
+from blindtest.models import Game, Question, QuizType, ScoringMode
+from blindtest.services import game_option, question_line, split_answers
+
+QUESTION_SEARCH_FIELDS = ['prompt__icontains',
+                          'expected_answer__text__icontains',
+                          'secondary_answer__text__icontains']
+"""The lookups the pickers of questions search, as the Discord ones do."""
+
+GAME_SEARCH_FIELDS = ['name__icontains']
+"""The lookup the picker of games searches."""
+
+
+class FullWidthWidgetMixin(object):
+    """Stretch a picker to the width of the column it sits in."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.attrs['style'] = 'width : 100%'
+
+
+class SearchWidget(FullWidthWidgetMixin, select2_forms.Select2Widget):
+    """A full width picker over the channels or roles Discord lists."""
+
+
+class QuestionWidget(FullWidthWidgetMixin, select2_forms.ModelSelect2MultipleWidget):
+    """A picker asking the server for the questions a game may still queue."""
+
+    search_fields = QUESTION_SEARCH_FIELDS
+
+    def label_from_instance(self, question: Question) -> str:
+        """Return the question as the host picks it, answer included."""
+        return question_line(question, with_answer=True)
+
+
+class GameWidget(FullWidthWidgetMixin, select2_forms.ModelSelect2Widget):
+    """A picker asking the server for the games a host may copy from."""
+
+    search_fields = GAME_SEARCH_FIELDS
+
+    def label_from_instance(self, game: Game) -> str:
+        """Return the game as the host picks it, with its size and state."""
+        return game_option(game, game.questions)
 
 
 def form_errors(form: forms.Form) -> str:
@@ -60,14 +103,28 @@ class BootstrapForm(forms.Form):
                 css_class='mb-3'))
 
 
-class PickerForm(BootstrapForm):
+def picker_choices(options: list[dict] | None,
+                   current: int | None = None,
+                   label_prefix: str = '#') -> list[tuple[str, str]]:
+    """Return the ``(value, label)`` pairs of a picker, saved value included.
+
+    A saved value Discord no longer lists is added back, so opening and saving
+    a page again keeps it rather than quietly dropping it.
+    """
+    choices = [(str(option['id']), option['label']) for option in (options or [])]
+    if current is not None:
+        current = str(current)
+        if all(current != given for given, _ in choices):
+            choices.append((current, f'{label_prefix}{current}'))
+    return choices
+
+
+class _OptionsForm(BootstrapForm):
     """A form whose choices are the channels or roles Discord lists.
 
     The options are read per request rather than at import time, so the view
     that renders the page hands them in, as does ``current``: the value already
-    saved, which the picker starts on. A saved value Discord no longer lists is
-    added back as an option, so opening and saving the page again keeps it
-    rather than quietly dropping it.
+    saved, which the picker starts on.
     """
 
     label_prefix = '#'
@@ -75,15 +132,30 @@ class PickerForm(BootstrapForm):
     def __init__(self, *args, options: list[dict] | None = None,
                  current: int | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        choices = [(str(option['id']), option['label'])
-                   for option in (options or [])]
-        if current is not None:
-            current = str(current)
-            if all(current != given for given, _ in choices):
-                choices.append((current, f'{self.label_prefix}{current}'))
-            self.initial[next(iter(self.fields))] = current
+        choices = picker_choices(options, current, self.label_prefix)
         for field in self.fields.values():
             field.choices = choices
+        if current is not None:
+            self.initial[next(iter(self.fields))] = str(current)
+
+
+def _option_field(label, placeholder, **kwargs):
+    """Return a picker field reading the channels or roles Discord lists."""
+    return forms.ChoiceField(
+        label=label, widget=SearchWidget(
+            attrs={'data-placeholder': placeholder}), **kwargs)
+
+
+def _options_of(options: list[dict], limit: int = MAX_CHOICES) -> list[tuple[str, str]]:
+    """Return the ``(pk, label)`` pairs of a picker fed by the domain."""
+    return [(str(option['pk']), option['label'])
+            for option in options[:limit]]
+
+
+class PickerForm(_OptionsForm):
+    """A form whose first field starts on the value already saved."""
+
+    label_prefix = '#'
 
 
 class QuestionFields(BootstrapForm):
@@ -151,7 +223,7 @@ class HostRoleForm(PickerForm):
     label_prefix = '@'
 
     role_id = forms.ChoiceField(
-        label=_('Role'), widget=select2_forms.Select2Widget(
+        label=_('Role'), widget=SearchWidget(
             attrs={'data-placeholder': _('Search a role')}),
         help_text=_('Everybody holding the role may host games.'))
 
@@ -174,7 +246,7 @@ class ChannelForm(PickerForm):
     auto_id_prefix = 'channel'
 
     channel_id = forms.ChoiceField(
-        label=_('Channel'), widget=select2_forms.Select2Widget(
+        label=_('Channel'), widget=SearchWidget(
             attrs={'data-placeholder': _('Search a channel')}))
 
 
@@ -184,6 +256,168 @@ class PingRoleForm(PickerForm):
     auto_id_prefix = 'ping'
     label_prefix = '@'
 
-    role_id = forms.ChoiceField(
-        label=_('Role'), widget=select2_forms.Select2Widget(
-            attrs={'data-placeholder': _('Search a role')}))
+    role_id = _option_field(_('Role'), _('Search a role'))
+
+
+class SetupGameForm(BootstrapForm):
+    """A game being set up: where it is played, how it is played and named."""
+
+    submit_label = _('Set up the quiz')
+    auto_id_prefix = 'setup'
+
+    channel_id = _option_field(
+        _('Channel'), _('Search a channel'), required=False,
+        help_text=_('Left empty, the channel the server defaults to is used.'))
+    ping_role_id = _option_field(
+        _('Ping role'), _('Search a role'), required=False,
+        help_text=_('Left empty, the role the server defaults to is used, '
+                    'which may be none.'))
+    name = forms.CharField(
+        label=_('Name'), max_length=100, required=False,
+        help_text=_('Left empty, the quiz is named after its type.'))
+    quiz_type = forms.ChoiceField(
+        label=_('Quiz type'), choices=QuizType.choices,
+        initial=QuizType.BLIND_TEST,
+        help_text=_('Decides how each round of the game is played.'))
+    scoring_mode = forms.ChoiceField(
+        label=_('Scoring mode'), choices=ScoringMode.choices,
+        initial=ScoringMode.STANDARD,
+        help_text=_('How the points of a round are shared out.'))
+
+    def __init__(self, *args, channels: list[dict] | None = None,
+                 roles: list[dict] | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.fields['channel_id'].choices = picker_choices(channels)
+        self.fields['ping_role_id'].choices = picker_choices(roles, None, '@')
+
+    def service_kwargs(self) -> dict:
+        """Return what ``services.create_game`` is called with."""
+        data = self.cleaned_data
+        return {'channel_id': _given(data['channel_id'], int),
+                'ping_role_id': _given(data['ping_role_id'], int),
+                'name': data['name'], 'quiz_type': data['quiz_type'],
+                'scoring_mode': data['scoring_mode']}
+
+
+def _given(text: str, cast):
+    """Return the value of a picker field, None when it was left empty."""
+    text = (text or '').strip()
+    return cast(text) if text else None
+
+
+class _QueueForm(BootstrapForm):
+    """A form that may play the questions it queues as another quiz type."""
+
+    quiz_type = forms.ChoiceField(
+        label=_('Played as'), required=False,
+        help_text=_('Queues them as this type rather than the one of the game.'))
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.fields['quiz_type'].choices = [
+            ('', _('As the game is')), *QuizType.choices]
+
+
+class QueueForm(_QueueForm):
+    """Questions to add to the queue of a game."""
+
+    submit_label = _('Queue the questions')
+    auto_id_prefix = 'queue'
+
+    questions = forms.ModelMultipleChoiceField(
+        label=_('Questions'),
+        queryset=Question.objects.none(),
+        widget=QuestionWidget(
+            attrs={'data-placeholder': _('Search a question')}),
+        help_text=_('Questions the quiz type cannot play are skipped.'))
+
+    def __init__(self, *args, game=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        if game is not None:
+            self.fields['questions'].queryset = services.queueable_questions(game)
+            self.fields['questions'].widget.queryset = (
+                self.fields['questions'].queryset)
+            self._search_url(game)
+
+    def _search_url(self, game) -> None:
+        """Point the picker at the search of this game, in its server."""
+        widget = self.fields['questions'].widget
+        widget.data_url = reverse('webadmin:game_search',
+                                  args=[game.guild.discord_id, game.pk])
+
+    def pks(self) -> list[int]:
+        """Return the questions to queue, as the service wants their pks."""
+        return list(self.cleaned_data['questions'].values_list('pk', flat=True))
+
+
+class UnqueueForm(BootstrapForm):
+    """Queued rounds to drop from a game."""
+
+    submit_label = _('Drop the questions')
+    auto_id_prefix = 'unqueue'
+
+    rounds = forms.MultipleChoiceField(
+        label=_('Queued questions'), required=False,
+        widget=forms.CheckboxSelectMultiple)
+
+    def __init__(self, *args, options: list[dict] | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.fields['rounds'].choices = _options_of(options or [])
+
+    def pks(self) -> list[int]:
+        """Return the queued rounds to drop, as the service wants their pks."""
+        return [int(pk) for pk in self.cleaned_data['rounds']]
+
+
+class CopyForm(_QueueForm):
+    """Questions copied over from a game this server played before."""
+
+    submit_label = _('Copy the questions')
+    auto_id_prefix = 'copy'
+
+    source = forms.ModelChoiceField(
+        label=_('Copy from'), queryset=Game.objects.none(),
+        widget=GameWidget(
+            attrs={'data-placeholder': _('Search a game')}))
+
+    def __init__(self, *args, game=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        if game is not None:
+            games = services.copyable_games(game.guild, game)
+            self.fields['source'].queryset = games
+            self.fields['source'].widget.queryset = games
+            self.fields['source'].widget.data_url = reverse(
+                'webadmin:game_search', args=[game.guild.discord_id, game.pk])
+
+
+class GuessForm(BootstrapForm):
+    """A player's answer to the round in play."""
+
+    submit_label = _('Answer')
+    auto_id_prefix = 'guess'
+
+    answer = forms.CharField(
+        label=_('Answer'), max_length=200, required=False,
+        help_text=_('The title, the artist, or both.'))
+    artist = forms.CharField(
+        label=_('Artist'), max_length=200, required=False)
+
+    def service_kwargs(self) -> dict:
+        """Return what ``services.submit_guess`` is called with."""
+        data = self.cleaned_data
+        return {'text': data['answer'], 'secondary_text': data['artist']}
+
+
+class ChoiceGuessForm(BootstrapForm):
+    """A player's pick in a multiple choice round."""
+
+    submit_label = _('Answer')
+    auto_id_prefix = 'guess'
+
+    choice = forms.ChoiceField(label=_('Answer'))
+    artist = forms.CharField(
+        label=_('Artist'), max_length=200, required=False)
+
+    def __init__(self, *args, options: list[dict] | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.fields['choice'].choices = _options_of(options or [])

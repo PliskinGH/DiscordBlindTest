@@ -3,7 +3,7 @@
 from django.contrib.auth import views as auth_views
 from django.urls import path
 
-from .views import auth, dashboard, guilds, library, settings
+from .views import auth, dashboard, games, guilds, library, settings
 
 app_name = 'webadmin'
 
@@ -29,6 +29,37 @@ urlpatterns = [
          library.RemoveQuestionView.as_view(), name='question_drop'),
     path('g/<int:discord_guild_id>/library/answers/<int:answer_pk>/drop/',
          library.RemoveAnswerView.as_view(), name='answer_drop'),
+    # The control room: a host runs a game from the browser, and every member
+    # of the server may answer the round in play.
+    path('g/<int:discord_guild_id>/games/', games.GamesView.as_view(),
+         name='games'),
+    path('g/<int:discord_guild_id>/games/setup/', games.SetupGameView.as_view(),
+         name='game_setup'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/',
+         games.GameView.as_view(), name='game'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/state/',
+         games.GameStateView.as_view(), name='game_state'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/live/',
+         games.GameLiveView.as_view(), name='game_live'),
+    # The pickers ask the server for their options rather than carrying them.
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/search/',
+         games.SearchView.as_view(), name='game_search'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/publish/',
+         games.PublishGameView.as_view(), name='game_publish'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/queue/',
+         games.QueueView.as_view(), name='game_queue'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/unqueue/',
+         games.UnqueueView.as_view(), name='game_unqueue'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/copy/',
+         games.CopyQuestionsView.as_view(), name='game_copy'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/next/',
+         games.NextRoundView.as_view(), name='game_next'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/reveal/',
+         games.RevealRoundView.as_view(), name='game_reveal'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/end/',
+         games.EndGameView.as_view(), name='game_end'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/guess/',
+         games.GuessView.as_view(), name='game_guess'),
     # The settings of a server are managed by its administrators.
     path('g/<int:discord_guild_id>/settings/', settings.SettingsView.as_view(),
          name='settings'),

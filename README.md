@@ -56,7 +56,7 @@ python manage.py test         # test suite
 | `/quiz setup` | Set up a game: optional `channel` where to play the game and `role` to ping, plus name, quiz type and scoring mode (hosts only) |
 | `/quiz publish` | Publish the game being prepared, in its channel (hosts only) |
 | `/quiz panel` | Reopen the private controls of the running game (hosts only) |
-| `/quiz guess` | Submit your answer for the round in play (players) |
+| `/quiz guess` | Submit your guess for the round in play (players) |
 | `/quiz queue` | Queue the question of the next round, optionally played as another quiz type (hosts only) |
 | `/quiz unqueue` | Remove a question queued for a round (hosts only) |
 | `/quiz clear` | Remove every queued question of the game (hosts only) |
@@ -70,7 +70,7 @@ python manage.py test         # test suite
 | `/teams members remove` | Take a member out of a team (hosts only) |
 | `/teams rename` | Give a team another name (hosts only) |
 | `/teams remove` | Remove a team that has not scored yet (hosts only) |
-| `/teams list` | Show the teams of the running game and who answers in them (hosts only) |
+| `/teams list` | Show the teams of the running game and who guesses in them (hosts only) |
 | `/admin host add` | Allow a user or a role to host (server administrators) |
 | `/admin host remove` | Withdraw host rights (server administrators) |
 | `/admin host list` | Show the hosts of this server (server administrators) |
@@ -120,7 +120,7 @@ python manage.py test         # test suite
 
 - Hosts drive a published game from the private panel sent by `/quiz setup` or `/quiz panel`: next round, reveal, queue, end.
   - `/quiz panel` reopens it when Discord cleared it.
-  - Every round is posted with an **Answer** button opening the answer form of the round in play.
+  - Every round is posted with a **Guess** button opening the guess form of the round in play.
   - The panel and the round buttons keep working after a bot restart: their state lives in the database.
 
 - A game change that has to be published, opened, revealed or ended is recorded as a **broadcast**, posted by the bot holding the Discord connection:
@@ -128,7 +128,7 @@ python manage.py test         # test suite
   - A caller without a connection (see [Web admin](#web-admin) section) records it only, and the bot posts it on its next pass.
   - Every broadcast is made exactly once, whichever client claims it first.
 
-- A guess counts for the team its player was in when they answered, if it exists.
+- A guess counts for the team its player was in when they guessed, if it exists.
   - Teams can be changed while a game runs (`/teams` commands).
   - A team of an earlier game can be copied over with its members.
 
@@ -146,7 +146,7 @@ python manage.py test         # test suite
 
 A game has a quiz type (blind test by default) and each round inherits it, or overrides it: the type decides how a round is played.
 
-| Type | Needs | Answer form |
+| Type | Needs | Guess form |
 | --- | --- | --- |
 | Blind test | nothing beyond the expected answer | two text fields (answer and secondary answer) |
 | Open question | a prompt | two text fields |
@@ -191,10 +191,10 @@ The web process offers an alternative interface (mainly for hosts, but can also 
 - It needs `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` and the registered `DISCORD_REDIRECT_URI` (the last env var is not mandatory as it can be rebuilt, but preferrable).
 - The dashboard lists only the servers the bot has a record of, with the possibility to add other servers or invite the bot to them.
 - Each server has a **library** its hosts fill with questions, answers and accepted variants, and **settings** its administrators manage: the channel its games are played in, the role they ping, and who may host.
-- Each server has a **control room** where its hosts run a game from the browser, and every member of the server answers from theirs:
+- Each server has a **control room** where its hosts run a game from the browser, and every member of the server guesses from theirs:
   - Feature parity with the discord bot, with the host controls and also the guess from the players.
   - Every change is recorded as a **broadcast** and posted by the bot holding the Discord connection, so everything is posted on the Discord channel even if acted from the web.
-  - The live parts of the control room and of the answer page follow the game with [htmx](https://htmx.org): the round, the number of answers and the standings update by themselves, so an answer given in Discord shows up without reloading.
+  - The live parts of the control room and of the guess page follow the game with [htmx](https://htmx.org): the round, the number of guesses and the standings update by themselves, so a guess given in Discord shows up without reloading.
   - The control room lists the recent broadcasts of its game, and a broadcast that failed can be posted again.
   - Questions to queue and games to copy from are searched server-side. The search needs a cache shared by every process that serves the web admin: set `REDIS_URL` in production, since the in-memory cache of a single worker will not answer a search another worker is asked for.
   - The **Teams** panel creates, renames, populates and removes the teams of the game, and copies teams of earlier games.

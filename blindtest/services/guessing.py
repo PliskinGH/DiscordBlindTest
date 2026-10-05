@@ -1,4 +1,4 @@
-"""The answer form of a round, and the guesses sent to it."""
+"""The guess form of a round, and the guesses sent to it."""
 
 
 import logging
@@ -43,8 +43,8 @@ def round_display(round_: Round) -> dict:
                         for choice in question.choices.all()][:MAX_CHOICES]}
 
 
-def answer_form(display: dict) -> dict:
-    """Return the answer form of a round: its type and the choices to offer."""
+def guess_form(display: dict) -> dict:
+    """Return the guess form of a round: its type and the choices to offer."""
     multiple_choice = display['type'] == QuizType.MULTIPLE_CHOICE
     return {'round_id': display['round_id'], 'index': display['index'],
             'type': display['type'],
@@ -75,13 +75,13 @@ def accepted_forms(question: Question) -> dict[str, list[str]]:
 
 def submit_guess(round_: Round, player: Player, text: str = '',
                  secondary_text: str = '') -> Guess:
-    """Record a player's first answer for a round; the points come at reveal."""
+    """Record a player's first guess for a round; the points come at reveal."""
     if not round_.is_started:
         raise ValueError(_("This round has not started yet."))
     if round_.is_revealed:
         raise ValueError(_("This round is already revealed."))
     if Guess.objects.filter(round=round_, player=player).exists():
-        raise ValueError(_("You already answered this round."))
+        raise ValueError(_("You already guessed this round."))
     text = text.strip()
     secondary_text = secondary_text.strip()
     if not text and not secondary_text:
@@ -97,7 +97,7 @@ def submit_guess(round_: Round, player: Player, text: str = '',
         text_correct=matching.matches_normalized(text, forms['expected']),
         secondary_correct=matching.matches_normalized(secondary_text,
                                                       forms['secondary']))
-    logger.info('Game %s round %s: %s answered', round_.game_id, round_.index,
+    logger.info('Game %s round %s: %s guessed', round_.game_id, round_.index,
                 player)
     return guess
 
@@ -112,5 +112,5 @@ def submit_multiple_choice(round_: Round, player: Player, choice_pk: int,
 
 
 def guess_of(round_: Round, player: Player) -> Guess | None:
-    """Return what the player answered in a round, if they answered at all."""
+    """Return what the player guessed in a round, if they guessed at all."""
     return round_.guesses.filter(player=player).first()

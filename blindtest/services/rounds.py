@@ -11,7 +11,7 @@ from discordcore.members import DiscordMember
 
 from ..constants import MAX_LISTED_PLAYERS, QUIZ_OVER
 from ..models import Game, Question, QuizType, Round
-from .guessing import answer_form, round_display
+from .guessing import guess_form, round_display
 from .guilds import require_host
 from .library import require_question_fits
 from .scores import game_scores
@@ -113,10 +113,10 @@ def open_round(game: Game, host_member: DiscordMember,
 
 
 def round_payload(round_: Round) -> dict:
-    """Return what the message opening a round shows, with its answer form."""
+    """Return what the message opening a round shows, with its guess form."""
     display = round_display(round_)
     display['queued'] = queued_count(round_.game)
-    display['form'] = answer_form(display)
+    display['form'] = guess_form(display)
     display['ping_role_id'] = round_.game.ping_role_id
     return display
 
@@ -146,12 +146,12 @@ def pick_question(game: Game, quiz_type: str = QuizType.BLIND_TEST) -> Question:
     return candidates.get(pk=random.choice(pks))
 
 
-def round_answers(round_: Round) -> dict:
-    """Return how many players answered a round and who was right."""
+def round_guesses(round_: Round) -> dict:
+    """Return how many players guessed a round and who was right."""
     guesses = list(round_.guesses.select_related('player'))
     right = [guess for guess in guesses
              if guess.text_correct and guess.player is not None]
-    return {'answered': len(guesses), 'right': len(right),
+    return {'guessed': len(guesses), 'right': len(right),
             'right_names': [guess.player.discord_name or guess.player.username
                             for guess in right][:MAX_LISTED_PLAYERS]}
 
@@ -160,7 +160,7 @@ def reveal_payload(round_: Round) -> dict:
     """Return what the answer of a revealed round and its standings show."""
     display = round_display(round_)
     display['player_scores'] = game_scores(round_.game)
-    display.update(round_answers(round_))
+    display.update(round_guesses(round_))
     return display
 
 

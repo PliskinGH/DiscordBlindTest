@@ -8,7 +8,10 @@ from typing import TYPE_CHECKING
 
 import discord
 
-from blindtest.constants import CHOICE_NAME_LIMIT, MAX_CHOICES
+from blindtest.constants import (CHOICE_NAME_LIMIT, GUESS_ANSWER_HINT,
+                                 GUESS_ANSWER_LABEL, GUESS_PICK_PLACEHOLDER,
+                                 GUESS_SECONDARY_HINT, GUESS_SECONDARY_LABEL,
+                                 MAX_CHOICES)
 
 from .embeds import clip
 
@@ -17,12 +20,12 @@ if TYPE_CHECKING:
 
 # Discord holds 45 characters of a modal title.
 MODAL_TITLE_LIMIT = 45
-# What the answer form is called when no server could be named.
+# What the guess form is called when no server could be named.
 ANSWER_TITLE = 'Your answer'
 
 # Controls are persistent: the cog revives them at startup and Discord holds
 # their custom_ids, so a bot restart must not change them.
-GAME_ANSWER_ID = 'blindtest_player_answer'
+GAME_GUESS_ID = 'blindtest_player_answer'
 HOST_NEXT_ID = 'blindtest_host_next'
 HOST_REVEAL_ID = 'blindtest_host_reveal'
 HOST_QUEUE_ID = 'blindtest_host_queue'
@@ -55,6 +58,39 @@ def option_label(choice: dict) -> str:
     return (prefix + choice['label'])[:CHOICE_NAME_LIMIT]
 
 
+def choice_term(raw: str) -> str:
+    """Return a displayed label as a choice search term, decorations undone."""
+    return raw.strip().removeprefix('🎵 ').removesuffix('…').strip()
+
+
+def choice_pk(raw: str, choices: 'list[dict] | None') -> int | None:
+    """Return the pk a command option names: by value first, then by label."""
+    wanted = str(raw).strip()
+    for choice in choices or []:
+        if str(choice['pk']) == wanted:
+            return int(choice['pk'])
+    for choice in choices or []:
+        if wanted in (choice['label'], option_label(choice)):
+            return int(choice['pk'])
+    return None
+
+
+async def picked_pk(fetch, raw: str) -> int | None:
+    """Return the pk an option names, reading the choices through its term.
+
+    ``fetch`` receives a search term and returns the choices. A composed
+    label is retried by its head and its tail, since a server side search
+    matches the fields the label was built from rather than the label.
+    """
+    term = choice_term(raw)
+    picked = choice_pk(raw, await fetch(term))
+    if picked is None and ' — ' in term:
+        picked = choice_pk(raw, await fetch(term.split(' — ')[0]))
+        if picked is None:
+            picked = choice_pk(raw, await fetch(term.rsplit(' — ')[-1]))
+    return picked
+
+
 def pick_options(choices: 'list[dict] | None') -> list[discord.SelectOption]:
     """Return a picker's options, offering a placeholder when it has none."""
     if not choices:
@@ -66,7 +102,7 @@ def pick_options(choices: 'list[dict] | None') -> list[discord.SelectOption]:
 
 
 class GuessModal(discord.ui.Modal):
-    """Answer form of a round, built from the form the services returned.
+    """Guess form of a round, built from the form the services returned.
 
     A multiple choice round offers its choices in a select and keeps the text
     field for the secondary answer; every other round asks for two texts.
@@ -78,30 +114,32 @@ class GuessModal(discord.ui.Modal):
                          custom_id=GUESS_MODAL_ID)
         self.cog = cog
         self.form = form
+        # The constants are lazy strings; Discord serializes them itself.
         if form['options']:
             self.pick = discord.ui.Select(
                 custom_id=GUESS_PICK_ID,
-                placeholder='Pick your answer',
+                placeholder=str(GUESS_PICK_PLACEHOLDER),
                 options=[discord.SelectOption(label=option_label(option),
                                               value=str(option['pk']))
                          for option in form['options']])
-            self.add_item(discord.ui.Label(text='Answer', component=self.pick))
+            self.add_item(discord.ui.Label(text=str(GUESS_ANSWER_LABEL),
+                                           component=self.pick))
             self.answer_input = None
         else:
             self.answer_input = discord.ui.TextInput(
                 max_length=200, custom_id=GUESS_TEXT_ID,
-                placeholder='Song title, or whatever the question asks for.')
-            self.add_item(discord.ui.Label(text='Answer',
+                placeholder=str(GUESS_ANSWER_HINT))
+            self.add_item(discord.ui.Label(text=str(GUESS_ANSWER_LABEL),
                                            component=self.answer_input))
             self.pick = None
         self.secondary_input = discord.ui.TextInput(
             max_length=200, required=False, custom_id=GUESS_SECONDARY_ID,
-            placeholder='Artist for blind tests, or secondary required answer.')
-        self.add_item(discord.ui.Label(text='Secondary answer',
+            placeholder=str(GUESS_SECONDARY_HINT))
+        self.add_item(discord.ui.Label(text=str(GUESS_SECONDARY_LABEL),
                                        component=self.secondary_input))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        """Record the answer of the round in play."""
+        """Record the guess of the round in play."""
         # Read the values before the first await: they belong to this submission.
         picked = int(self.pick.values[0]) if self.pick is not None else None
         answer = self.answer_input.value if self.answer_input is not None else ''
@@ -109,13 +147,13 @@ class GuessModal(discord.ui.Modal):
         await self.cog.record_guess(interaction, answer, secondary, picked)
 
 
-class AnswerFormPanel(discord.ui.View):
-    """Private button opening the answer form primed for a round message."""
+class GuessFormPanel(discord.ui.View):
+    """Private button opening the guess form primed for a round message."""
 
     def __init__(self, cog: 'GameCog', message_id: int) -> None:
         super().__init__(timeout=None)
         self.cog = cog
-        button = discord.ui.Button(label='Answer', style=discord.ButtonStyle.primary,
+        button = discord.ui.Button(label='Guess', style=discord.ButtonStyle.primary,
                                    custom_id=f'{FORM_OPEN_ID}:{message_id}')
         button.callback = self.open_form
         self.message_id = message_id
@@ -127,17 +165,17 @@ class AnswerFormPanel(discord.ui.View):
 
 
 class GamePanel(discord.ui.View):
-    """Answer button posted with every round."""
+    """Guess button posted with every round."""
 
     def __init__(self, cog: 'GameCog') -> None:
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label='Answer', style=discord.ButtonStyle.primary,
-                       custom_id=GAME_ANSWER_ID)
-    async def answer(self, interaction: discord.Interaction,
-                     button: discord.ui.Button) -> None:
-        """Open the answer form of the round in play."""
+    @discord.ui.button(label='Guess', style=discord.ButtonStyle.primary,
+                       custom_id=GAME_GUESS_ID)
+    async def guess(self, interaction: discord.Interaction,
+                    button: discord.ui.Button) -> None:
+        """Open the guess form of the round in play."""
         await self.cog.open_guess_form(interaction)
 
 

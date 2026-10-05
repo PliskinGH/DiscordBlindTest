@@ -21,7 +21,7 @@ from blindtest.services.games import (active_game, clear_queue,
                                       game_choices, game_summary, panel_data,
                                       queue_questions, queued_choices,
                                       unqueue_questions)
-from blindtest.services.guessing import (answer_form, round_display,
+from blindtest.services.guessing import (guess_form, round_display,
                                          submit_guess,
                                          submit_multiple_choice)
 from blindtest.services.guilds import (games_count, is_host, require_host,
@@ -31,12 +31,13 @@ from blindtest.services.rounds import create_round, current_round
 
 from .. import embeds
 from ..db import guild_for, player_for, run_db
-from ..ui import (ANSWER_TITLE, AnswerFormPanel, GamePanel, GuessModal, HostPanel,
-                  QueuePanel, SetupPanel, disabled, option_label)
+from ..ui import (ANSWER_TITLE, GamePanel, GuessFormPanel, GuessModal,
+                  HostPanel, QueuePanel, SetupPanel, disabled, option_label,
+                  picked_pk)
 
 logger = logging.getLogger(__name__)
 
-# Answer forms primed by the rounds opened in this process.
+# Guess forms primed by the rounds opened in this process.
 MAX_CACHED_FORMS = 20
 # How often the client posts the broadcasts recorded without one.
 BROADCAST_POLL_SECONDS = 1.0
@@ -50,7 +51,7 @@ NO_QUIZ_RUNNING = 'No game is running in this server.'
 # Descriptions both groups share; only setup, queue and next differ.
 PUBLISH_DESCRIPTION = 'Publish the game being prepared.'
 PANEL_DESCRIPTION = 'Reopen the private controls of the running game.'
-GUESS_DESCRIPTION = 'Submit your answer for the round in play.'
+GUESS_DESCRIPTION = 'Submit your guess for the round in play.'
 END_DESCRIPTION = 'End the game of this server.'
 REVEAL_DESCRIPTION = 'Reveal the current round.'
 UNQUEUE_DESCRIPTION = 'Remove a question queued for a round.'
@@ -158,8 +159,17 @@ def unqueued_text(removed: int) -> str:
     return removed_text(removed) if removed else 'That question is not queued.'
 
 
-def answer_form_title(interaction: discord.Interaction) -> str:
-    """Return the title of an answer form: the bot's name in the server."""
+def chosen_value(raw: str, choices) -> str:
+    """Return the value of a static choice, by value or by display label."""
+    wanted = str(raw).strip()
+    for choice in choices:
+        if wanted in (choice.value, str(choice.label)):
+            return choice.value
+    return wanted
+
+
+def guess_form_title(interaction: discord.Interaction) -> str:
+    """Return the title of a guess form: the bot's name in the server."""
     guild = interaction.guild
     return guild.me.display_name if guild is not None else ANSWER_TITLE
 
@@ -253,7 +263,7 @@ class GameCog(commands.Cog):
 
     async def defer(self, interaction: discord.Interaction,
                     update_panel: bool = False) -> None:
-        """Answer the interaction before any database work.
+        """Respond to the interaction before any database work.
 
         A flow that closes the panel it came from holds its interaction to a
         deferred message update; every other flow defers a private reply.
@@ -342,7 +352,7 @@ class GameCog(commands.Cog):
     @app_commands.describe(**GUESS_OPTIONS)
     async def quiz_guess_command(self, interaction: discord.Interaction,
                                  answer: str, secondary_answer: str = '') -> None:
-        """Record the answer of the player invoking the command."""
+        """Record the guess of the player invoking the command."""
         await self.record_guess(interaction, answer, secondary_answer)
 
     @blindtest.command(name='guess', description=GUESS_DESCRIPTION)
@@ -350,7 +360,7 @@ class GameCog(commands.Cog):
     async def blindtest_guess_command(self, interaction: discord.Interaction,
                                       answer: str,
                                       secondary_answer: str = '') -> None:
-        """Record the answer of the player invoking the command."""
+        """Record the guess of the player invoking the command."""
         await self.record_guess(interaction, answer, secondary_answer)
 
     @quiz.command(name='end', description=END_DESCRIPTION)
@@ -448,8 +458,8 @@ class GameCog(commands.Cog):
         await self.copy_questions(interaction, source)
 
 
-    async def answer_refused_setup(self, interaction: discord.Interaction,
-                                   guild: Guild, error: Exception) -> None:
+    async def refuse_setup(self, interaction: discord.Interaction,
+                           guild: Guild, error: Exception) -> None:
         """Refuse a setup, beside the controls of the game already there.
 
         The option checks run before the host check, so only a host may see the
@@ -474,6 +484,8 @@ class GameCog(commands.Cog):
                          role: discord.Role | None = None) -> bool:
         """Set up a new game and hand its setup controls to the host."""
         await self.defer(interaction)
+        scoring = chosen_value(scoring, ScoringMode)
+        quiz_type = chosen_value(quiz_type, QuizType) if quiz_type else quiz_type
         try:
             guild = await guild_for(interaction)
             channel_id = named_channel_id(interaction, channel)
@@ -492,7 +504,7 @@ class GameCog(commands.Cog):
                 ephemeral=True)
             return False
         except ValueError as error:
-            await self.answer_refused_setup(interaction, guild, error)
+            await self.refuse_setup(interaction, guild, error)
             return False
         except Exception:
             logger.exception('Failed to set up the game')
@@ -547,9 +559,12 @@ class GameCog(commands.Cog):
 
 
     async def setup_flow(self, interaction: discord.Interaction, operation,
-                         text_of, *args) -> bool:
-        """Run an operation on the game and refresh the panel it shows."""
-        await self.defer(interaction, update_panel=True)
+                         text_of, *args, deferred: bool = False) -> bool:
+        """Run an operation on the game and refresh the panel it shows.
+        ``deferred`` is set when the caller already deferred to read first.
+        """
+        if not deferred:
+            await self.defer(interaction, update_panel=True)
         try:
             guild = await guild_for(interaction)
             game = await run_db(active_game, guild)
@@ -603,12 +618,21 @@ class GameCog(commands.Cog):
     async def copy_questions(self, interaction: discord.Interaction,
                              source: str) -> bool:
         """Queue the questions of another game."""
-        if not source.isdigit():
-            await self.defer(interaction)
+        if source.strip().isdigit():
+            return await self.copy_selection(interaction, source)
+        await self.defer(interaction)
+        guild = await guild_for(interaction)
+        game = await run_db(active_game, guild)
+        picked = (await picked_pk(
+            lambda term: run_db(game_choices, guild, game, term), source)
+            if game is not None else None)
+        if picked is None:
             await interaction.followup.send('That game no longer exists.',
                                             ephemeral=True)
             return False
-        return await self.copy_selection(interaction, source)
+        return await self.setup_flow(
+            interaction, copy_questions_by_pk, added_text, picked,
+            deferred=True)
 
     async def publish(self, interaction: discord.Interaction) -> bool:
         """Publish the game being prepared."""
@@ -650,7 +674,7 @@ class GameCog(commands.Cog):
         return True
 
     async def open_next_round(self, interaction: discord.Interaction) -> bool:
-        """Open the next round and post its Answer button."""
+        """Open the next round and post its Guess button."""
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
@@ -849,10 +873,15 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
-            if not question.isdigit():
-                await interaction.followup.send(
-                    'That question no longer exists.', ephemeral=True)
-                return False
+            if not question.strip().isdigit():
+                picked = await picked_pk(
+                    lambda term: run_db(question_choices, game, term),
+                    question)
+                if picked is None:
+                    await interaction.followup.send(
+                        'That question no longer exists.', ephemeral=True)
+                    return False
+                question = str(picked)
             chosen = await run_db(question_by_pk, int(question))
             result = await run_db(create_round, game,
                                   interaction.user, chosen, quiz_type)
@@ -878,14 +907,23 @@ class GameCog(commands.Cog):
     async def unqueue_question(self, interaction: discord.Interaction,
                                question: str) -> bool:
         """Remove a queued question of the game."""
-        if not question.isdigit():
-            await self.defer(interaction)
+        if question.strip().isdigit():
+            return await self.setup_flow(
+                interaction, unqueue_questions, unqueued_text,
+                [int(question)])
+        await self.defer(interaction)
+        guild = await guild_for(interaction)
+        game = await run_db(active_game, guild)
+        picked = (await picked_pk(
+            lambda term: run_db(queued_choices, game, term), question)
+            if game is not None else None)
+        if picked is None:
             await interaction.followup.send('That question no longer exists.',
                                             ephemeral=True)
             return False
         return await self.setup_flow(
-            interaction, unqueue_questions, unqueued_text,
-            [int(question)])
+            interaction, unqueue_questions, unqueued_text, [picked],
+            deferred=True)
 
     async def end_game(self, interaction: discord.Interaction) -> bool:
         """Close the game, publishing the round left open and the final scores."""
@@ -962,19 +1000,19 @@ class GameCog(commands.Cog):
         await interaction.followup.send(text, ephemeral=True)
 
     def cache_form(self, message_id: int, form: dict) -> None:
-        """Remember the answer form of a round, for its next Answer click."""
+        """Remember the guess form of a round, for its next Guess click."""
         self.forms[message_id] = form
         self.forms.move_to_end(message_id)
         while len(self.forms) > MAX_CACHED_FORMS:
             self.forms.popitem(last=False)
 
     async def open_guess_form(self, interaction: discord.Interaction) -> None:
-        """Open the answer form of the round the clicked message belongs to."""
+        """Open the guess form of the round the clicked message belongs to."""
         message = interaction.message
         form = self.forms.get(message.id if message is not None else None)
         if form is not None:
             await interaction.response.send_modal(
-                GuessModal(self, form, answer_form_title(interaction)))
+                GuessModal(self, form, guess_form_title(interaction)))
             return
         await self.prime_form(interaction)
 
@@ -997,30 +1035,30 @@ class GameCog(commands.Cog):
                     'No round is running yet.', ephemeral=True)
                 return
             display = await run_db(round_display, round_)
-            self.cache_form(message_id, await run_db(answer_form, display))
+            self.cache_form(message_id, await run_db(guess_form, display))
             await interaction.followup.send(
-                'Your answer form is ready.', ephemeral=True,
-                view=AnswerFormPanel(self, message_id))
+                'Your guess form is ready.', ephemeral=True,
+                view=GuessFormPanel(self, message_id))
         except Exception:
-            logger.exception('Failed to open the answer form')
+            logger.exception('Failed to open the guess form')
             await interaction.followup.send(
-                'Could not open the answer form.', ephemeral=True)
+                'Could not open the guess form.', ephemeral=True)
 
     async def show_form(self, interaction: discord.Interaction,
                         message_id: int) -> None:
-        """Open the answer form primed for a round message."""
+        """Open the guess form primed for a round message."""
         form = self.forms.get(message_id)
         if form is None:
             await interaction.response.send_message(
-                'This form expired, click Answer again.', ephemeral=True)
+                'This form expired, click Guess again.', ephemeral=True)
             return
         await interaction.response.send_modal(
-            GuessModal(self, form, answer_form_title(interaction)))
+            GuessModal(self, form, guess_form_title(interaction)))
 
     async def record_guess(self, interaction: discord.Interaction,
                            answer: str = '', secondary_answer: str = '',
                            choice_pk: int | None = None) -> bool:
-        """Record the answer of a player for the round in play."""
+        """Record the guess of a player for the round in play."""
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
@@ -1042,15 +1080,15 @@ class GameCog(commands.Cog):
                 await run_db(submit_multiple_choice, round_, player,
                              choice_pk, secondary_answer)
             await interaction.followup.send(
-                f'Answer recorded for round {round_.index}. '
+                f'Guess recorded for round {round_.index}. '
                 'The result comes with the reveal.', ephemeral=True)
         except ValueError as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
         except Exception:
-            logger.exception('Failed to record an answer')
+            logger.exception('Failed to record a guess')
             await interaction.followup.send(
-                'Could not record the answer.', ephemeral=True)
+                'Could not record the guess.', ephemeral=True)
             return False
         return True
 

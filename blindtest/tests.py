@@ -27,7 +27,7 @@ from .services.games import (clear_queue, copy_questions_by_pk,
                              create_game, end_game, game_choices,
                              panel_data, publish_game,
                              queue_questions, queued_choices)
-from .services.guessing import (answer_form, round_display,
+from .services.guessing import (guess_form, round_display,
                                 submit_guess)
 from .services.guilds import (add_host, clear_default_channel,
                               clear_default_ping_role,
@@ -177,7 +177,7 @@ class GameTests(GameTestCase):
         self.assertEqual(result['reveal']['right'], 1)
         # The recap counts the round the ending revealed.
         self.assertEqual(result['rounds'], 1)
-        self.assertEqual(result['answers'], 1)
+        self.assertEqual(result['guesses'], 1)
         self.assertEqual([score['points'] for score in result['player_scores']], [2])
 
     def test_finishing_a_game_without_an_open_round_reveals_nothing(self):
@@ -1513,14 +1513,14 @@ class QuizTypeTests(GameTestCase):
     def test_the_form_of_a_text_round_offers_no_option(self):
         round_ = Round.objects.get(
             pk=open_round(self.game, self.host, self.question)['round_id'])
-        self.assertEqual(answer_form(round_display(round_))['options'], [])
+        self.assertEqual(guess_form(round_display(round_))['options'], [])
 
     def test_the_form_of_a_multiple_choice_round_offers_its_choices(self):
         round_ = Round.objects.get(
             pk=create_round(self.game, self.host,
                                      self._choice_question(),
                                      QuizType.MULTIPLE_CHOICE)['round_id'])
-        form = answer_form(round_display(round_))
+        form = guess_form(round_display(round_))
         self.assertEqual(form['type'], QuizType.MULTIPLE_CHOICE)
         self.assertEqual([option['label'] for option in form['options']],
                          ['Right', 'Wrong'])
@@ -1549,7 +1549,7 @@ class QuizTypeTests(GameTestCase):
         submit_guess(round_, self.player_row, 'Song', 'Band')
         result = reveal_round(round_, self.host)
         self.assertEqual(result['answer_text'], 'Song (Band)')
-        self.assertEqual((result['answered'], result['right']), (1, 1))
+        self.assertEqual((result['guessed'], result['right']), (1, 1))
         self.assertEqual(result['right_names'], ['user43'])
 
     def test_the_recap_summarises_the_game(self):
@@ -1559,7 +1559,7 @@ class QuizTypeTests(GameTestCase):
         reveal_round(round_, self.host)
         recap = end_game(self.game, self.host)
         self.assertEqual(recap['rounds'], 1)
-        self.assertEqual(recap['answers'], 1)
+        self.assertEqual(recap['guesses'], 1)
         self.assertEqual(recap['game_name'], self.game.display_name)
         self.assertEqual([row['points'] for row in recap['player_scores']], [2])
 
@@ -1571,7 +1571,7 @@ class QuizTypeTests(GameTestCase):
         create_round(self.game, self.host, self.other_question)
         recap = end_game(self.game, self.host)
         self.assertEqual(recap['rounds'], 1)
-        self.assertEqual(recap['answers'], 1)
+        self.assertEqual(recap['guesses'], 1)
         self.assertEqual([row['points'] for row in recap['player_scores']], [2])
 
     def test_a_round_edited_in_the_admin_is_validated(self):
@@ -1868,7 +1868,7 @@ class ScoreboardQueryTests(GameTestCase):
     """A scoreboard reads the rounds of a game once, whatever their number."""
 
     def _play(self, rounds: int) -> Game:
-        """Return a game with as many played, answered and revealed rounds."""
+        """Return a game with as many played, guessed and revealed rounds."""
         game = self.create_game()
         for _count in range(rounds):
             round_ = Round.objects.get(

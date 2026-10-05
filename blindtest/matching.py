@@ -1,4 +1,4 @@
-"""Comparison of guessed answers with the expected title or artist."""
+"""Comparison of guesses with the expected title or artist."""
 
 from collections.abc import Iterable
 import re

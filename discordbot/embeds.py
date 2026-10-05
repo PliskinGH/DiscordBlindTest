@@ -147,7 +147,7 @@ def publication_embed(payload: dict, host_mention: str) -> discord.Embed:
     """Return the message publishing a new game."""
     embed = discord.Embed(
         title=payload['game_name'],
-        description=f'Hosted by {host_mention} · answer with the button below '
+        description=f'Hosted by {host_mention} · guess with the button below '
                     f'each round.',
         colour=RUNNING, timestamp=payload.get('created_at'))
     embed.add_field(name='Quiz type', value=payload['type_label'])
@@ -163,7 +163,7 @@ def round_embed(payload: dict) -> discord.Embed:
     embed.add_field(name=f'{icon(payload["type"])} {payload["type_label"]}',
                     value=f'{payload["queued"]} question(s) queued')
     embed.set_footer(text=f'Round {payload["index"]} · '
-                          f'{payload["scoring_label"]} · answer with the button '
+                          f'{payload["scoring_label"]} · guess with the button '
                           f'below')
     return embed
 
@@ -193,8 +193,8 @@ def reveal_embed(payload: dict) -> discord.Embed:
         title=title(payload, f'Round {payload["index"]} answer'),
         description='\n'.join(lines),
         colour=SCORED if payload['right'] else REVEALED)
-    embed.add_field(name='Correct answers',
-                    value=f'{payload["right"]} of {payload["answered"]}')
+    embed.add_field(name='Correct guesses',
+                    value=f'{payload["right"]} of {payload["guessed"]}')
     names = payload['right_names']
     if names:
         left = payload['right'] - len(names)
@@ -209,7 +209,7 @@ def reveal_embed(payload: dict) -> discord.Embed:
 def leader_line(scores: list[dict], verb: str) -> str:
     """Return the callout naming the best player of a scoreboard."""
     if not scores:
-        return 'No answer was given.'
+        return 'No guess was given.'
     return f'🥇 {row_label(scores[0])} {verb}!'
 
 
@@ -237,7 +237,7 @@ def recap_embed(payload: dict) -> discord.Embed:
                                              FIELD_VALUE_LIMIT - RESERVE)
         fields.append(('Teams', block(team_lines, teams_left, 'teams'), False))
     fields += [('Rounds played', str(payload['rounds']), True),
-               ('Answers given', str(payload['answers']), True),
+               ('Guesses given', str(payload['guesses']), True),
                ('Quiz type', payload['type_label'], True)]
     return scores_embed(payload, 'final scores',
                         leader_line(payload['player_scores'], 'wins'),

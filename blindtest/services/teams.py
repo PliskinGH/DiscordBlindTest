@@ -1,4 +1,4 @@
-"""The teams answering together in a game, and the players in them."""
+"""The teams guessing together in a game, and the players in them."""
 
 
 from collections.abc import Iterable
@@ -180,7 +180,7 @@ def remove_player(team: Team, host_member: DiscordMember, player: Player) -> Tea
     require_host(team.game.guild, host_member)
     _require_editable(team.game)
     if not team.players.filter(pk=player.pk).exists():
-        raise ValueError(_('%(name)s does not answer for "%(team)s".')
+        raise ValueError(_('%(name)s does not play for "%(team)s".')
                          % {'name': player_label(player), 'team': team.name})
     team.players.remove(player)
     logger.info('Game %s: %s left team %s', team.game_id, player, team.name)

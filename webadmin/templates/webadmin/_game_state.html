@@ -4,7 +4,7 @@
     <div class="d-flex align-items-center justify-content-between gap-2">
       <h3 class="h6 mb-0">Round {{ state.round.index }} — {{ state.round.type_label }}</h3>
       <span class="badge text-bg-secondary">
-        {{ state.round.answers.answered }} answered
+        {{ state.round.guesses.guessed }} guessed
       </span>
     </div>
     {% if state.round.prompt_set %}
@@ -20,17 +20,17 @@
     {% if state.round.is_revealed %}
     <p class="mb-1"><strong>{{ state.round.answer_text }}</strong></p>
     <p class="mb-0 small text-body-secondary">
-      {{ state.round.answers.right }} right.
-      {% if state.round.answers.right_names %}
-      {{ state.round.answers.right_names|join:", " }}.
+      {{ state.round.guesses.right }} right.
+      {% if state.round.guesses.right_names %}
+      {{ state.round.guesses.right_names|join:", " }}.
       {% endif %}
     </p>
     {% endif %}
     {% if state.round.guessed %}
     <p class="mb-0 small text-body-secondary">
-      You answered “{{ state.round.guessed_text }}”.
+      You guessed “{{ state.round.guessed_text }}”.
       {% if state.round.guessed_secondary %}
-      Artist “{{ state.round.guessed_secondary }}”.
+      {{ state.round.guessed_secondary_label }} “{{ state.round.guessed_secondary }}”.
       {% endif %}
       {% if state.round.is_revealed %}
       {% if state.round.guessed_correct or state.round.guessed_secondary_correct %}

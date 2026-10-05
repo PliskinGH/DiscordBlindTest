@@ -1,4 +1,4 @@
-"""Points of a round, computed from the answers instead of stored on them."""
+"""Points of a round, computed from the guesses instead of stored on them."""
 
 from collections.abc import Iterable
 
@@ -12,7 +12,7 @@ def round_points(round_: Round,
                  guesses: Iterable[Guess] | None = None) -> dict[int, int]:
     """Return the points earned by each guess of the round, keyed by guess id.
 
-    The totals depend on the other answers of the round (first only, speed),
+    The totals depend on the other guesses of the round (first only, speed),
     which is why no points are stored on the guesses themselves. A caller that
     read the guesses already passes them in, in submission order.
     """

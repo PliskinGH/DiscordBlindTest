@@ -209,7 +209,7 @@ class Game(models.Model):
 
 
 class Team(models.Model):
-    """A team answering together during one game."""
+    """A team guessing together during one game."""
 
     game = models.ForeignKey(Game, on_delete=models.CASCADE,
                              related_name='teams', verbose_name=_('game'))
@@ -233,7 +233,7 @@ class Team(models.Model):
 
 
 class Round(models.Model):
-    """One question played during a game, with the answers it collected."""
+    """One question played during a game, with the guesses it collected."""
 
     game = models.ForeignKey(Game, on_delete=models.CASCADE,
                              related_name='rounds', verbose_name=_('game'))
@@ -295,7 +295,7 @@ class Round(models.Model):
 
 
 class Guess(models.Model):
-    """A player's answer for one round: the first answer is the final one."""
+    """A player's guess for one round: the first guess is the final one."""
 
     round = models.ForeignKey(Round, on_delete=models.CASCADE,
                               related_name='guesses', verbose_name=_('round'))
@@ -317,7 +317,7 @@ class Guess(models.Model):
         constraints = [
             UniqueConstraint('round', 'player', name='unique_guess_per_round',
                              violation_error_message=_(
-                                 'This player already answered this round.')),
+                                 'This player already guessed this round.')),
         ]
 
     def __str__(self) -> str:

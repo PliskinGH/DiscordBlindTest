@@ -18,7 +18,7 @@ from blindtest.services.games import (active_game, clear_queue, control_state,
                                       copy_questions_by_pk, create_game,
                                       game_by_pk, game_rows, queue_questions,
                                       queued_choices, unqueue_questions)
-from blindtest.services.guessing import (answer_form, round_display,
+from blindtest.services.guessing import (guess_form, round_display,
                                          submit_guess,
                                          submit_multiple_choice)
 from blindtest.services.guilds import is_host
@@ -63,9 +63,9 @@ def _host_of(request, kwargs):
     return require_host_member(request, _guild_id(kwargs))
 
 
-def _answer_form(round_, data=None):
-    """Return the answer form of a round, of the kind its type is played with."""
-    display = answer_form(round_display(round_))
+def _guess_form(round_, data=None):
+    """Return the guess form of a round, of the kind its type is played with."""
+    display = guess_form(round_display(round_))
     if display['type'] == QuizType.MULTIPLE_CHOICE:
         return ChoiceGuessForm(data, options=display['options'])
     return GuessForm(data)
@@ -108,7 +108,7 @@ def _state(request, game, is_host: bool = False) -> dict:
     """Return what the live partial of a game shows, to one player.
 
     ``is_host`` decides whether the host controls are part of it, so the same
-    partial serves the control room and the answer page.
+    partial serves the control room and the guess page.
     """
     state = control_state(game, request.user)
     back = request.get_full_path()
@@ -118,12 +118,12 @@ def _state(request, game, is_host: bool = False) -> dict:
             'retry_back': back}
 
 
-def _answer_page(request, game, round_, data=None):
-    """Return the answer page of a round, beside what the player answered."""
-    return render(request, 'webadmin/answer.html', {
+def _guess_page(request, game, round_, data=None):
+    """Return the guess page of a round, beside what the player guessed."""
+    return render(request, 'webadmin/guess.html', {
         'guild': game.guild, 'game': game,
         'state': _state(request, game, _hosts(request, game)),
-        'form': _answer_form(round_, data)})
+        'form': _guess_form(round_, data)})
 
 
 class GamesView(HostRequired, TemplateView):
@@ -172,7 +172,7 @@ class GameView(HostRequired, TemplateView):
                        team_copy_form=CopyTeamForm(
                            action=reverse('webadmin:team_copy', args=args),
                            game=game),
-                       answer_url=reverse('webadmin:game_answer', args=args),
+                       guess_url=reverse('webadmin:game_guess', args=args),
                        state_url=reverse('webadmin:game_state', args=args))
         return context
 
@@ -196,7 +196,7 @@ class GameLiveView(GuildAccessMixin, TemplateView):
     """The part of a game that follows it while it plays, for a member.
 
     Every member of the server may read it: a host reveals a round from Discord
-    and the players watching the answer page have to see it without reloading.
+    and the players watching the guess page have to see it without reloading.
     """
 
     template_name = 'webadmin/_game_state.html'
@@ -451,7 +451,7 @@ class TeamMemberView(HostRequired, View):
         """Take the player the posted key names out of the team."""
         player = team.players.filter(pk=request.POST.get('player', '')).first()
         if player is None:
-            raise ValueError(_('This player does not answer for this team.'))
+            raise ValueError(_('This player is not on this team.'))
         remove_player(team, host, player)
 
 
@@ -510,22 +510,22 @@ class EndGameView(HostRequired, View):
         return _back(game)
 
 
-class AnswerView(GuildAccessMixin, View):
-    """Answer the round in play. Any member of the server may, host or not."""
+class GuessView(GuildAccessMixin, View):
+    """Guess the round in play. Any member of the server may, host or not."""
 
     def get(self, request, *args, **kwargs):
-        return self._answer(request, kwargs)
+        return self._guess(request, kwargs)
 
     def post(self, request, *args, **kwargs):
-        return self._answer(request, kwargs)
+        return self._guess(request, kwargs)
 
-    def _answer(self, request, kwargs):
-        """Show the round open to answer, recording an answer when one is posted."""
+    def _guess(self, request, kwargs):
+        """Show the round open to guess, recording a guess when one is posted."""
         game, round_ = self._round_in_play(request, kwargs)
         if round_ is None:
             # A member of the server may not read the control room, so the page
             # every one of them can open is where they are sent.
-            messages.error(request, 'No round is open to answer right now.')
+            messages.error(request, 'No round is open to guess right now.')
             return redirect('webadmin:guild',
                             discord_guild_id=game.guild.discord_id)
         data = request.POST if request.method == 'POST' else None
@@ -535,19 +535,19 @@ class AnswerView(GuildAccessMixin, View):
             except (PermissionError, ValueError) as error:
                 messages.error(request, error)
             else:
-                messages.success(request, 'Your answer is in.')
+                messages.success(request, 'Your guess is in.')
                 data = None
-        return _answer_page(request, game, round_, data)
+        return _guess_page(request, game, round_, data)
 
     def _submit(self, request, round_, data) -> None:
-        """Record the answer the form carries, as the round type expects it."""
-        form = _answer_form(round_, data)
+        """Record the guess the form carries, as the round type expects it."""
+        form = _guess_form(round_, data)
         if not form.is_valid():
             raise ValueError(form_errors(form))
         if isinstance(form, ChoiceGuessForm):
             submit_multiple_choice(
                 round_, request.user, int(form.cleaned_data['choice']),
-                form.cleaned_data['artist'])
+                form.cleaned_data['secondary_answer'])
             return
         submit_guess(round_, request.user, **form.service_kwargs())
 

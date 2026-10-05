@@ -32,7 +32,7 @@ urlpatterns = [
     path('g/<int:discord_guild_id>/library/answers/<int:answer_pk>/remove/',
          library.RemoveAnswerView.as_view(), name='answer_remove'),
     # The control room: a host runs a game from the browser, and every member
-    # of the server may answer the round in play.
+    # of the server may guess the round in play.
     path('g/<int:discord_guild_id>/games/', games.GamesView.as_view(),
          name='games'),
     path('g/<int:discord_guild_id>/games/setup/', games.SetupGameView.as_view(),
@@ -71,8 +71,8 @@ urlpatterns = [
          games.RenameTeamView.as_view(), name='team_rename'),
     path('g/<int:discord_guild_id>/games/<int:game_pk>/teams/<int:team_pk>/remove/',
          games.RemoveTeamView.as_view(), name='team_remove'),
-    path('g/<int:discord_guild_id>/games/<int:game_pk>/answer/',
-         games.AnswerView.as_view(), name='game_answer'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/guess/',
+         games.GuessView.as_view(), name='game_guess'),
     # The settings of a server are managed by its administrators.
     path('g/<int:discord_guild_id>/settings/', settings.SettingsView.as_view(),
          name='settings'),

@@ -14,14 +14,15 @@ from discordcore.models import Guild, Player
 
 from .. import caching
 from .. import scoring
-from ..constants import LIBRARY_PAGE_SIZE, MAX_CHOICES, QUIZ_OVER
+from ..constants import (GUESS_SECONDARY_LABEL, LIBRARY_PAGE_SIZE,
+                         MAX_CHOICES, QUIZ_OVER)
 from ..models import (Game, Question, QuizType, Round, ScoringMode,
                       question_problem)
-from .guessing import answer_form, guess_of, round_display
+from .guessing import guess_form, guess_of, round_display
 from .guilds import require_host, target_channel_id, target_ping_role_id
 from .library import question_choices, question_line
 from .rounds import (create_round, current_round, queued_count,
-                     require_visible, reveal_round, round_answers)
+                     require_visible, reveal_round, round_guesses)
 from .scores import _scored_rounds, game_scores, game_team_scores
 from .teams import has_teams, teams_of
 
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 def active_game(guild: Guild) -> Game | None:
     """Return the unplayed game of a guild, if any.
     Read uncached: ``create_game`` asks this to refuse a second live game, and a
-    stale answer would let the unique constraint raise instead.
+    stale read would let the unique constraint raise instead.
     """
     return (Game.objects.filter(guild=guild)
             .exclude(state=Game.State.FINISHED).first())
@@ -147,7 +148,7 @@ def recap_payload(game: Game, rounds: Iterable[Round] | None = None) -> dict:
             'player_scores': game_scores(game, rounds),
             'team_scores': game_team_scores(game, rounds),
             'rounds': len(rounds),
-            'answers': sum(len(round_.guesses.all()) for round_ in rounds),
+            'guesses': sum(len(round_.guesses.all()) for round_ in rounds),
             'finished_at': game.finished_at,
             'channel_id': game.channel_id}
 
@@ -309,7 +310,7 @@ def _query_game_choices(guild: Guild, current: Game | None, text: str,
 
 def control_state(game: Game, player: Player | None = None) -> dict:
     """Return everything the control room of a game shows at one moment.
-    The round in play with its display values and its answers, the queue, and
+    The round in play with its display values and its guesses, the queue, and
     the standings. Built from the same reads the embeds are built from, so what
     a host sees in the browser and what the server was told cannot disagree.
     The rounds are read once and scored from that read: the control room of a
@@ -337,12 +338,13 @@ def control_state(game: Game, player: Player | None = None) -> dict:
     guess = None if player is None else guess_of(round_, player)
     return {**state, **standings,
             'round': {**display, 'is_active': round_.is_active,
-                      'answers': round_answers(round_),
-                      'form': answer_form(display),
+                      'guesses': round_guesses(round_),
+                      'form': guess_form(display),
                       'guessed': guess is not None,
                       'guessed_text': guess.text if guess is not None else '',
                       'guessed_secondary': (guess.secondary_text
                                             if guess is not None else ''),
+                      'guessed_secondary_label': GUESS_SECONDARY_LABEL,
                       'guessed_correct': (bool(guess.text_correct)
                                           if guess is not None else False),
                       'guessed_secondary_correct': (

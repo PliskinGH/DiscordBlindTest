@@ -8,7 +8,9 @@ from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 from django_select2 import forms as select2_forms
 
-from blindtest.constants import MAX_CHOICES, MAX_YEAR
+from blindtest.constants import (GUESS_ANSWER_HINT, GUESS_ANSWER_LABEL,
+                                 GUESS_SECONDARY_HINT, GUESS_SECONDARY_LABEL,
+                                 MAX_CHOICES, MAX_YEAR)
 from blindtest.models import Game, Question, QuizType, ScoringMode, Team
 from blindtest.services.games import (copyable_games, create_game,
                                       game_option)
@@ -471,32 +473,35 @@ class CopyForm(_QueueForm):
 
 
 class GuessForm(BootstrapForm):
-    """A player's answer to the round in play."""
+    """A player's guess for the round in play."""
 
-    submit_label = _('Answer')
+    submit_label = _('Guess')
     auto_id_prefix = 'guess'
 
     answer = forms.CharField(
-        label=_('Answer'), max_length=200, required=False,
-        help_text=_('The title, the artist, or both.'))
-    artist = forms.CharField(
-        label=_('Artist'), max_length=200, required=False)
+        label=GUESS_ANSWER_LABEL, max_length=200, required=False,
+        help_text=GUESS_ANSWER_HINT)
+    secondary_answer = forms.CharField(
+        label=GUESS_SECONDARY_LABEL, max_length=200, required=False,
+        help_text=GUESS_SECONDARY_HINT)
 
     def service_kwargs(self) -> dict:
         """Return what ``submit_guess`` is called with."""
         data = self.cleaned_data
-        return {'text': data['answer'], 'secondary_text': data['artist']}
+        return {'text': data['answer'],
+                'secondary_text': data['secondary_answer']}
 
 
 class ChoiceGuessForm(BootstrapForm):
     """A player's pick in a multiple choice round."""
 
-    submit_label = _('Answer')
+    submit_label = _('Guess')
     auto_id_prefix = 'guess'
 
-    choice = forms.ChoiceField(label=_('Answer'))
-    artist = forms.CharField(
-        label=_('Artist'), max_length=200, required=False)
+    choice = forms.ChoiceField(label=GUESS_ANSWER_LABEL)
+    secondary_answer = forms.CharField(
+        label=GUESS_SECONDARY_LABEL, max_length=200, required=False,
+        help_text=GUESS_SECONDARY_HINT)
 
     def __init__(self, *args, options: list[dict] | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)

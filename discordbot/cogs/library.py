@@ -13,7 +13,7 @@ from blindtest.services.library import (add_answer, add_question, add_variant,
 
 from .. import embeds
 from ..db import guild_for, run_db
-from ..ui import option_label
+from ..ui import option_label, picked_pk
 
 logger = logging.getLogger(__name__)
 
@@ -203,10 +203,15 @@ class LibraryCog(commands.Cog):
                             media: str = '') -> None:
         """Change the fields of a question of this server's library."""
         await interaction.response.defer(ephemeral=True)
-        if not question.isdigit():
-            await interaction.followup.send('That question no longer exists.',
-                                            ephemeral=True)
-            return
+        if not question.strip().isdigit():
+            guild = await guild_for(interaction)
+            picked = await picked_pk(
+                lambda term: run_db(library_choices, guild, term), question)
+            if picked is None:
+                await interaction.followup.send(
+                    'That question no longer exists.', ephemeral=True)
+                return
+            question = str(picked)
         try:
             guild = await guild_for(interaction)
             result = await run_db(edit_question, guild,

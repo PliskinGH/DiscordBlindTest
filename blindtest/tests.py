@@ -45,7 +45,8 @@ from .services.library import (add_answer, add_question, add_variant,
                                unused_questions, variants_of)
 from .services.rounds import (create_round, current_round,
                               pick_question, queued_count,
-                              reveal_round, open_round)
+                              reveal_round, open_round, round_guesses,
+                              set_guess_correctness)
 from .services.scores import game_scores, game_team_scores
 from .services.teams import (add_team, assign_player, assign_players,
                             copyable_teams, copy_team, copy_team_by_pk,
@@ -522,6 +523,59 @@ class GuessTests(GameTestCase):
             pk=create_round(self.game, self.host, self.other_question)['round_id'])
         with self.assertRaises(ValueError):
             submit_guess(queued, self.player_row, 'Other', '')
+
+class GuessValidationTests(GameTestCase):
+    """A host corrects a guess the answer matcher got wrong."""
+
+    def setUp(self):
+        super().setUp()
+        self.game = self.create_game()
+        self.round = Round.objects.get(
+            pk=open_round(self.game, self.host, self.question)['round_id'])
+        self.guess = submit_guess(self.round, self.player_row, 'Sng', 'Nope')
+
+    def test_a_host_marks_a_missed_answer_right(self):
+        set_guess_correctness(self.guess, self.host, 'text', True)
+        self.guess.refresh_from_db()
+        self.assertTrue(self.guess.text_correct)
+        # The points follow the flag: they are never stored on the guess.
+        self.assertEqual(game_scores(self.game)[0]['points'], 1)
+
+    def test_a_host_marks_a_matched_answer_wrong(self):
+        set_guess_correctness(self.guess, self.host, 'secondary', True)
+        set_guess_correctness(self.guess, self.host, 'secondary', False)
+        self.guess.refresh_from_db()
+        self.assertFalse(self.guess.secondary_correct)
+
+    def test_each_sub_answer_is_corrected_on_its_own(self):
+        set_guess_correctness(self.guess, self.host, 'secondary', True)
+        self.guess.refresh_from_db()
+        self.assertFalse(self.guess.text_correct)
+        self.assertTrue(self.guess.secondary_correct)
+
+    def test_a_plain_member_corrects_nothing(self):
+        with self.assertRaises(PermissionError):
+            set_guess_correctness(self.guess, self.player, 'text', True)
+
+    def test_a_finished_game_refuses_the_correction(self):
+        end_game(self.game, self.host)
+        with self.assertRaises(ValueError):
+            set_guess_correctness(self.guess, self.host, 'text', True)
+
+    def test_an_unknown_field_is_refused(self):
+        with self.assertRaises(ValueError):
+            set_guess_correctness(self.guess, self.host, 'artist', True)
+
+    def test_the_lines_list_each_guess_with_its_flags(self):
+        [line] = round_guesses(self.round, with_lines=True)['lines']
+        self.assertEqual(line['text'], 'Sng')
+        self.assertFalse(line['text_correct'])
+        self.assertFalse(line['secondary_correct'])
+        self.assertTrue(line['player'])
+
+    def test_the_counts_alone_do_not_carry_the_guesses(self):
+        self.assertNotIn('lines', round_guesses(self.round))
+
 
 class ScoringTests(GameTestCase):
     def setUp(self):

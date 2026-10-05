@@ -1,0 +1,18 @@
+{# One sub-answer of a guess in the round, and the host's way to flip it. #}
+{{ text|default:"—" }}
+{% if correct %}
+<span class="badge text-bg-success">right</span>
+{% else %}
+<span class="badge text-bg-secondary">not right</span>
+{% endif %}
+{% if state.can_validate %}
+<form method="post" class="d-inline"
+      action="{% url 'webadmin:guess_correct' guild.discord_id state.game_pk guess.pk %}">
+  {% csrf_token %}
+  <input type="hidden" name="field" value="{{ field }}">
+  <input type="hidden" name="correct" value="{% if correct %}0{% else %}1{% endif %}">
+  <button type="submit" class="btn btn-sm btn-outline-secondary">
+    {% if correct %}Mark wrong{% else %}Mark correct{% endif %}
+  </button>
+</form>
+{% endif %}

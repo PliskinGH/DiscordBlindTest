@@ -308,13 +308,16 @@ def _query_game_choices(guild: Guild, current: Game | None, text: str,
             for game in games[:limit]]
 
 
-def control_state(game: Game, player: Player | None = None) -> dict:
+def control_state(game: Game, player: Player | None = None,
+                  with_guesses: bool = False) -> dict:
     """Return everything the control room of a game shows at one moment.
     The round in play with its display values and its guesses, the queue, and
     the standings. Built from the same reads the embeds are built from, so what
     a host sees in the browser and what the server was told cannot disagree.
     The rounds are read once and scored from that read: the control room of a
     live game is polled every couple of seconds.
+    ``with_guesses`` adds the guesses themselves to the round, for the host who
+    validates them as they come in; a player's page never asks for them.
     """
     round_ = current_round(game)
     rounds = _scored_rounds(game)
@@ -328,6 +331,7 @@ def control_state(game: Game, player: Player | None = None) -> dict:
                           and (round_ is None or round_.is_revealed)),
              'can_reveal': round_ is not None and round_.is_active,
              'can_queue': game.is_active,
+             'can_validate': game.is_active,
              'can_end': game.state != Game.State.FINISHED}
     standings = {'player_scores': game_scores(game, rounds),
                  'team_scores': game_team_scores(game, rounds)
@@ -338,7 +342,7 @@ def control_state(game: Game, player: Player | None = None) -> dict:
     guess = None if player is None else guess_of(round_, player)
     return {**state, **standings,
             'round': {**display, 'is_active': round_.is_active,
-                      'guesses': round_guesses(round_),
+                      'guesses': round_guesses(round_, with_lines=with_guesses),
                       'form': guess_form(display),
                       'guessed': guess is not None,
                       'guessed_text': guess.text if guess is not None else '',

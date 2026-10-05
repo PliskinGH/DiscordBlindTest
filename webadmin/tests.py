@@ -7,10 +7,11 @@ from unittest import mock
 from django.core.cache import cache
 from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from blindtest import constants
 from blindtest.models import (Broadcast, Game, Guess, Question, QuizType,
-                              ScoringMode)
+                              Round, ScoringMode)
 from discordblindtest.testing import NetworkAccessDenied, NoNetworkMixin
 from discordcore.members import LocalMember, LocalPermissions, LocalRole
 from discordcore.models import Guild, Host, Player
@@ -1169,6 +1170,99 @@ class GameControlTests(CacheTestCase):
         self._queue(game, question)
         self.client.post(self._url('game_next', game.pk))
         return game
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_control_room_lists_the_guesses_as_they_come(self, roles):
+        game = self._running_round()
+        submit_guess(current_round(game), self.guest, 'Wundervall', '')
+        response = self.client.get(self._url('game_state', game.pk))
+        self.assertContains(response, 'Guesses')
+        self.assertContains(response, 'guestie')
+        self.assertContains(response, 'Wundervall')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_member_reads_no_other_guess(self, roles):
+        game = self._running_round()
+        submit_guess(current_round(game), self.host_player, 'Wundervall', '')
+        self._as_guest()
+        live = self.client.get(self._url('game_live', game.pk))
+        self.assertNotContains(live, 'Wundervall')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_host_validates_a_guess_the_matcher_missed(self, roles):
+        game = self._running_round()
+        guess = submit_guess(current_round(game), self.guest, 'Wundervall', '')
+        self.assertFalse(guess.text_correct)
+        self.client.post(self._url('guess_correct', game.pk, guess.pk),
+                         {'field': 'text', 'correct': '1'})
+        guess.refresh_from_db()
+        self.assertTrue(guess.text_correct)
+        # The standings follow the flag on the next read.
+        self.assertEqual(control_state(game)['player_scores'][0]['points'], 1)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_host_marks_a_matched_guess_wrong(self, roles):
+        game = self._running_round()
+        guess = submit_guess(current_round(game), self.guest, 'Wonderwall', '')
+        self.assertTrue(guess.text_correct)
+        self.client.post(self._url('guess_correct', game.pk, guess.pk),
+                         {'field': 'text', 'correct': '0'})
+        guess.refresh_from_db()
+        self.assertFalse(guess.text_correct)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_host_corrects_a_guess_after_the_reveal(self, roles):
+        game = self._running_round()
+        guess = submit_guess(current_round(game), self.guest, 'Wundervall', '')
+        self.client.post(self._url('game_reveal', game.pk))
+        self.client.post(self._url('guess_correct', game.pk, guess.pk),
+                         {'field': 'text', 'correct': '1'})
+        guess.refresh_from_db()
+        self.assertTrue(guess.text_correct)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_finished_game_refuses_the_correction(self, roles):
+        game = self._running_round()
+        guess = submit_guess(current_round(game), self.guest, 'Wundervall', '')
+        self.client.post(self._url('game_end', game.pk))
+        response = self.client.post(
+            self._url('guess_correct', game.pk, guess.pk),
+            {'field': 'text', 'correct': '1'}, follow=True)
+        self.assertContains(response, 'This game is over.')
+        guess.refresh_from_db()
+        self.assertFalse(guess.text_correct)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_plain_member_corrects_nothing(self, roles):
+        game = self._running_round()
+        guess = submit_guess(current_round(game), self.guest, 'Wundervall', '')
+        self._as_guest()
+        response = self.client.post(
+            self._url('guess_correct', game.pk, guess.pk),
+            {'field': 'text', 'correct': '1'})
+        self.assertEqual(response.status_code, 403)
+        guess.refresh_from_db()
+        self.assertFalse(guess.text_correct)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_guess_of_another_game_is_not_corrected(self, roles):
+        game = self._running_round()
+        admin = LocalMember(id=42, name='hostie',
+                            guild_permissions=LocalPermissions(manage_guild=True))
+        foreign = create_game(self._other_guild(), 555, admin)
+        question = foreign.guild.questions.create(
+            prompt='P',
+            expected_answer=foreign.guild.answers.create(text='Other'))
+        round_ = Round.objects.create(game=foreign, index=1, question=question,
+                                      started_at=timezone.now())
+        guess = Guess.objects.create(round=round_, text='Other',
+                                     text_correct=True)
+        response = self.client.post(
+            self._url('guess_correct', game.pk, guess.pk),
+            {'field': 'text', 'correct': '0'})
+        self.assertEqual(response.status_code, 404)
+        guess.refresh_from_db()
+        self.assertTrue(guess.text_correct)
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_member_guesses_the_round_from_the_browser(self, roles):

@@ -73,6 +73,8 @@ urlpatterns = [
          games.RemoveTeamView.as_view(), name='team_remove'),
     path('g/<int:discord_guild_id>/games/<int:game_pk>/guess/',
          games.GuessView.as_view(), name='game_guess'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/guesses/<int:guess_pk>/correct/',
+         games.GuessCorrectView.as_view(), name='guess_correct'),
     # The settings of a server are managed by its administrators.
     path('g/<int:discord_guild_id>/settings/', settings.SettingsView.as_view(),
          name='settings'),

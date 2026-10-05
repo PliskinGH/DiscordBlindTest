@@ -43,6 +43,24 @@
       {% endif %}
     </p>
     {% endif %}
+    {% if state.is_host and state.round.guesses.lines %}
+    <hr>
+    <h4 class="h6">Guesses</h4>
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr><th>Player</th><th>Answer</th><th>Secondary</th></tr>
+      </thead>
+      <tbody>
+        {% for guess in state.round.guesses.lines %}
+        <tr>
+          <td>{{ guess.player|default:"—" }}</td>
+          <td>{% include 'webadmin/_guess_answer.html' with field='text' text=guess.text correct=guess.text_correct %}</td>
+          <td>{% if guess.secondary_text %}{% include 'webadmin/_guess_answer.html' with field='secondary' text=guess.secondary_text correct=guess.secondary_correct %}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
   </div>
 </div>
 {% elif state.can_round %}

@@ -10,7 +10,7 @@ from django.views import View
 from django.views.generic import TemplateView
 from django_select2.views import AutoResponseView
 
-from blindtest.models import Game, QuizType, Team
+from blindtest.models import Game, Guess, QuizType, Team
 from blindtest.services.broadcasts import (post_publication, post_game_end,
                                            post_round_reveal, game_broadcasts,
                                            post_round_open)
@@ -22,7 +22,7 @@ from blindtest.services.guessing import (guess_form, round_display,
                                          submit_guess,
                                          submit_multiple_choice)
 from blindtest.services.guilds import is_host
-from blindtest.services.rounds import current_round
+from blindtest.services.rounds import current_round, set_guess_correctness
 from blindtest.services.teams import (add_team, assign_player, copy_team_by_pk,
                                       remove_player, remove_team, rename_team,
                                       teams_of)
@@ -104,13 +104,22 @@ def _team(game: Game, pk) -> Team:
     return team
 
 
+def _guess(game: Game, pk) -> Guess:
+    """Return a guess of a round of this game, refusing one of another game."""
+    guess = (Guess.objects.filter(pk=pk, round__game=game)
+             .select_related('round__game__guild', 'player').first())
+    if guess is None:
+        raise Http404(_('This game has no such guess.'))
+    return guess
+
+
 def _state(request, game, is_host: bool = False) -> dict:
     """Return what the live partial of a game shows, to one player.
 
     ``is_host`` decides whether the host controls are part of it, so the same
     partial serves the control room and the guess page.
     """
-    state = control_state(game, request.user)
+    state = control_state(game, request.user, with_guesses=is_host)
     back = request.get_full_path()
     if not is_host:
         return {**state, 'is_host': False, 'broadcasts': [], 'retry_back': back}
@@ -556,3 +565,21 @@ class GuessView(GuildAccessMixin, View):
         game = _game(request, kwargs)
         round_ = current_round(game)
         return game, round_ if round_ is not None and round_.is_active else None
+
+
+class GuessCorrectView(HostRequired, View):
+    """A host marks one answer of a guess right or wrong, as they read it."""
+
+    http_method_names = ['post', 'options']
+
+    def post(self, request, *args, **kwargs):
+        game = _game(request, kwargs)
+        guess = _guess(game, kwargs['guess_pk'])
+        try:
+            set_guess_correctness(guess, _host_of(request, kwargs),
+                                  request.POST.get('field', ''),
+                                  request.POST.get('correct') == '1')
+        except (PermissionError, ValueError) as error:
+            messages.error(request, error)
+            return _back(game)
+        return _back(game)

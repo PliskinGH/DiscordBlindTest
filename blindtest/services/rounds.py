@@ -10,11 +10,12 @@ from django.utils.translation import gettext as _
 from discordcore.members import DiscordMember
 
 from ..constants import MAX_LISTED_PLAYERS, QUIZ_OVER
-from ..models import Game, Question, QuizType, Round
+from ..models import Game, Guess, Question, QuizType, Round
 from .guessing import guess_form, round_display
 from .guilds import require_host
 from .library import require_question_fits
 from .scores import game_scores
+from .teams import player_label
 
 logger = logging.getLogger(__name__)
 
@@ -146,14 +147,57 @@ def pick_question(game: Game, quiz_type: str = QuizType.BLIND_TEST) -> Question:
     return candidates.get(pk=random.choice(pks))
 
 
-def round_guesses(round_: Round) -> dict:
-    """Return how many players guessed a round and who was right."""
+def guess_line(guess: Guess) -> dict:
+    """Return how one guess is listed to a host, with its two sub-answers."""
+    player = guess.player
+    return {'pk': guess.pk,
+            'player': player_label(player) if player is not None else '',
+            'text': guess.text, 'secondary_text': guess.secondary_text,
+            'text_correct': bool(guess.text_correct),
+            'secondary_correct': bool(guess.secondary_correct)}
+
+
+def round_guesses(round_: Round, with_lines: bool = False) -> dict:
+    """Return how many players guessed a round and who was right.
+
+    ``with_lines`` adds the guesses themselves, so a host reads them as they
+    come in; the guesses are read once either way.
+    """
     guesses = list(round_.guesses.select_related('player'))
     right = [guess for guess in guesses
              if guess.text_correct and guess.player is not None]
-    return {'guessed': len(guesses), 'right': len(right),
-            'right_names': [guess.player.discord_name or guess.player.username
-                            for guess in right][:MAX_LISTED_PLAYERS]}
+    counts = {'guessed': len(guesses), 'right': len(right),
+              'right_names': [guess.player.discord_name or guess.player.username
+                              for guess in right][:MAX_LISTED_PLAYERS]}
+    if with_lines:
+        counts['lines'] = [guess_line(guess) for guess in guesses]
+    return counts
+
+
+CORRECTNESS_FIELDS = {'text': 'text_correct', 'secondary': 'secondary_correct'}
+"""The sub-answers of a guess a host may correct, and the flag each one sets."""
+
+
+def set_guess_correctness(guess: Guess, host_member: DiscordMember,
+                          field: str, correct: bool) -> Guess:
+    """Mark one sub-answer of a guess right or wrong, as the host reads it.
+
+    A guess the answer matcher missed (a spelling the variants did not cover)
+    is corrected here; the points are recomputed from the flags at reveal.
+    """
+    round_ = guess.round
+    game = round_.game
+    require_host(game.guild, host_member)
+    if not game.is_active:
+        raise ValueError(QUIZ_OVER)
+    if field not in CORRECTNESS_FIELDS:
+        raise ValueError(_("This guess has no such answer."))
+    flag = CORRECTNESS_FIELDS[field]
+    setattr(guess, flag, bool(correct))
+    guess.save(update_fields=[flag])
+    logger.info('Game %s round %s: guess %s %s set to %s', game.pk, round_.index,
+                guess.pk, flag, bool(correct))
+    return guess
 
 
 def reveal_payload(round_: Round) -> dict:

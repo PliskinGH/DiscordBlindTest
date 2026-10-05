@@ -6,8 +6,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from blindtest import services
 from discordcore.mentions import role_mention, user_mention
+from blindtest.services.guilds import (add_host, clear_default_channel,
+                                       clear_default_ping_role,
+                                       default_channel_of,
+                                       default_ping_role_of, hosts_of,
+                                       remove_host, set_default_channel,
+                                       set_default_ping_role)
 
 from ..db import guild_for, run_db
 from .game import GameChannel, require_pingable
@@ -64,7 +69,7 @@ class AdminCog(commands.Cog):
                     'Give a user or a role to add.', ephemeral=True)
                 return
             for mention in mentions:
-                await run_db(services.add_host, guild, mention,
+                await run_db(add_host, guild, mention,
                              interaction.user)
             await interaction.followup.send(
                 f'Now hosting: {", ".join(mentions)}.', ephemeral=True)
@@ -92,7 +97,7 @@ class AdminCog(commands.Cog):
                     'Give a user or a role to remove.', ephemeral=True)
                 return
             for mention in mentions:
-                await run_db(services.remove_host, guild, mention,
+                await run_db(remove_host, guild, mention,
                              interaction.user)
             await interaction.followup.send(
                 f'No longer hosting: {", ".join(mentions)}.', ephemeral=True)
@@ -110,7 +115,7 @@ class AdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            mentions = await run_db(services.hosts_of, guild)
+            mentions = await run_db(hosts_of, guild)
             notice = 'Members with "Manage Server" can always host.'
             if not mentions:
                 await interaction.followup.send(
@@ -134,7 +139,7 @@ class AdminCog(commands.Cog):
         try:
             guild = await guild_for(interaction)
             target = channel or interaction.channel
-            await run_db(services.set_default_channel, guild, target.id,
+            await run_db(set_default_channel, guild, target.id,
                          interaction.user)
             await interaction.followup.send(
                 f'Quizzes are now played in {target.mention}.', ephemeral=True)
@@ -155,7 +160,7 @@ class AdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            await run_db(services.clear_default_channel, guild, interaction.user)
+            await run_db(clear_default_channel, guild, interaction.user)
             await interaction.followup.send(
                 'Quizzes are now played where they are started.',
                 ephemeral=True)
@@ -174,7 +179,7 @@ class AdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            channel_id = await run_db(services.default_channel_of, guild)
+            channel_id = await run_db(default_channel_of, guild)
             if channel_id is None:
                 await interaction.followup.send(
                     'No default channel: a game is played where it is started.',
@@ -198,7 +203,7 @@ class AdminCog(commands.Cog):
         try:
             guild = await guild_for(interaction)
             require_pingable(interaction, role)
-            await run_db(services.set_default_ping_role, guild, role.id,
+            await run_db(set_default_ping_role, guild, role.id,
                          interaction.user)
             await interaction.followup.send(
                 f'Quizzes now ping {role.mention}.', ephemeral=True)
@@ -217,7 +222,7 @@ class AdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            await run_db(services.clear_default_ping_role, guild,
+            await run_db(clear_default_ping_role, guild,
                          interaction.user)
             await interaction.followup.send(
                 'Quizzes now ping nobody.', ephemeral=True)
@@ -236,7 +241,7 @@ class AdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            role_id = await run_db(services.default_ping_role_of, guild)
+            role_id = await run_db(default_ping_role_of, guild)
             if role_id is None:
                 await interaction.followup.send(
                     'No default ping role: a game pings nobody.', ephemeral=True)

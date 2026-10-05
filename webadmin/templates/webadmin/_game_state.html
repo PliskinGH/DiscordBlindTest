@@ -85,6 +85,15 @@
 </div>
 {% endif %}
 
+{% if state.broadcasts %}
+<div class="card mb-3">
+  <div class="card-body">
+    <h3 class="h6 mb-2">Recent posts</h3>
+    {% include 'webadmin/_broadcasts.html' with broadcasts=state.broadcasts next=state.retry_back %}
+  </div>
+</div>
+{% endif %}
+
 {% if state.is_host %}
 <div class="d-flex gap-2 flex-wrap mb-4">
   {% if state.can_publish %}

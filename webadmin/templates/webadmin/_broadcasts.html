@@ -1,0 +1,25 @@
+{# The recent posts of a guild or a game, with a way to retry a dead one. #}
+<table class="table table-sm">
+  <thead>
+    <tr><th>Post</th><th>Status</th><th class="text-end">Tries</th><th>Reason</th></tr>
+  </thead>
+  <tbody>
+    {% for row in broadcasts %}
+    <tr>
+      <td>{{ row.kind }}</td>
+      <td>
+        {{ row.status }}
+        {% if row.dead %}
+        <form method="post" action="{% url 'webadmin:broadcast_retry' guild.discord_id row.broadcast %}" class="d-inline">
+          {% csrf_token %}
+          {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+          <button type="submit" class="btn btn-sm btn-outline-primary">Try again</button>
+        </form>
+        {% endif %}
+      </td>
+      <td class="text-end">{{ row.attempts }}</td>
+      <td class="small text-body-secondary">{{ row.error }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

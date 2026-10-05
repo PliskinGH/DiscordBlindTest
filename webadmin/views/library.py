@@ -6,11 +6,15 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views import View
 from django.views.generic import TemplateView
+from blindtest.services.library import (add_question, edit_question,
+                                        editable_question, own_questions,
+                                        question_line, remove_answer,
+                                        remove_question, set_variants,
+                                        unused_answers, unused_questions)
 
-from blindtest import services
 
 from ..forms import AddQuestionForm, EditQuestionForm, form_errors
-from ..permissions import HostRequired, require_guild, require_host
+from ..permissions import HostRequired, require_guild, require_host_member
 
 
 def _values_of(question) -> dict:
@@ -44,9 +48,9 @@ class LibraryView(HostRequired, TemplateView):
         guild = require_guild(guild_id)
         wanted = self.request.GET.get('q', '')
         context.update(guild=guild, wanted=wanted,
-                       questions=services.own_questions(guild, wanted),
-                       unused_questions=services.unused_questions(guild),
-                       unused_answers=services.unused_answers(guild),
+                       questions=own_questions(guild, wanted),
+                       unused_questions=unused_questions(guild),
+                       unused_answers=unused_answers(guild),
                        question_form=AddQuestionForm(
                            action=reverse('webadmin:question_add',
                                           args=[guild_id])))
@@ -65,8 +69,8 @@ class AddQuestionView(HostRequired, View):
             messages.error(request, form_errors(form))
             return _back(guild_id)
         try:
-            result = services.add_question(
-                require_guild(guild_id), require_host(request, guild_id),
+            result = add_question(
+                require_guild(guild_id), require_host_member(request, guild_id),
                 **form.service_kwargs())
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
@@ -93,17 +97,17 @@ class EditQuestionView(HostRequired, View):
             return self._page(request, guild_id, question_pk)
         try:
             guild = require_guild(guild_id)
-            member = require_host(request, guild_id)
-            services.edit_question(guild, member, question_pk,
+            member = require_host_member(request, guild_id)
+            edit_question(guild, member, question_pk,
                                    **form.service_kwargs())
-            question = services.editable_question(guild, member, question_pk)
+            question = editable_question(guild, member, question_pk)
             # The variants ride along the answer, renamed or not.
-            services.set_variants(guild, member, question.expected_answer.text,
+            set_variants(guild, member, question.expected_answer.text,
                                   form.variants())
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
             return self._page(request, guild_id, question_pk)
-        label = services.question_line(question, with_answer=True)
+        label = question_line(question, with_answer=True)
         messages.success(request, f'Question updated: {label}.')
         return _back(guild_id)
 
@@ -111,8 +115,8 @@ class EditQuestionView(HostRequired, View):
         """Return the edit form of one question, or 404 when it is not ours."""
         guild = require_guild(guild_id)
         try:
-            question = services.editable_question(
-                guild, require_host(request, guild_id), question_pk)
+            question = editable_question(
+                guild, require_host_member(request, guild_id), question_pk)
         except (PermissionError, ValueError) as error:
             raise Http404(str(error)) from error
         return render(request, 'webadmin/question.html', {
@@ -132,8 +136,8 @@ class RemoveQuestionView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         guild_id = int(kwargs['discord_guild_id'])
         try:
-            services.remove_question(require_guild(guild_id),
-                                      require_host(request, guild_id),
+            remove_question(require_guild(guild_id),
+                                      require_host_member(request, guild_id),
                                       int(kwargs['question_pk']))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
@@ -150,8 +154,8 @@ class RemoveAnswerView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         guild_id = int(kwargs['discord_guild_id'])
         try:
-            answer = services.remove_answer(require_guild(guild_id),
-                                            require_host(request, guild_id),
+            answer = remove_answer(require_guild(guild_id),
+                                            require_host_member(request, guild_id),
                                             int(kwargs['answer_pk']))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)

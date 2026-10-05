@@ -2,8 +2,9 @@
 
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import TemplateView
+from blindtest.services.games import active_game
+from blindtest.services.guilds import guilds_by_discord_ids
 
-from blindtest import services
 
 from .. import discord_api
 from ..permissions import can_manage
@@ -22,7 +23,7 @@ class DashboardView(LoginRequiredMixin, TemplateView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         guilds = discord_api.session_guilds(self.request.session)
-        rows = services.guilds_by_discord_ids([guild['id'] for guild in guilds])
+        rows = guilds_by_discord_ids([guild['id'] for guild in guilds])
         bot_guilds = discord_api.fetch_bot_guild_ids()
         managed, others = [], []
         for guild in guilds:
@@ -31,7 +32,7 @@ class DashboardView(LoginRequiredMixin, TemplateView):
             if row is not None:
                 managed.append({'discord_id': guild['id'], 'name': guild['name'],
                                 'manage': manage,
-                                'active_game': services.active_game(row)})
+                                'active_game': active_game(row)})
             elif manage:
                 others.append({
                     'discord_id': guild['id'], 'name': guild['name'],

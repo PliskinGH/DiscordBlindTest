@@ -7,9 +7,24 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from blindtest import services
 from blindtest.models import Broadcast, Game, Question, QuizType, ScoringMode
 from discordcore.models import Guild
+from blindtest.services.broadcasts import (announce_game, broadcast_payload,
+                                           claim_broadcast, close_game,
+                                           close_round, mark_broadcast_failed,
+                                           mark_broadcast_sent, open_round,
+                                           pending_broadcasts)
+from blindtest.services.games import (active_game, clear_queue,
+                                      copy_questions_by_pk, create_game,
+                                      game_choices, game_summary, panel_data,
+                                      queue_questions, queued_choices,
+                                      unqueue_questions)
+from blindtest.services.guessing import (guess_form, submit_guess,
+                                         submit_multiple_choice)
+from blindtest.services.guilds import (games_count, is_host, require_host,
+                                       target_channel_id, target_ping_role_id)
+from blindtest.services.library import question_by_pk, question_choices
+from blindtest.services.rounds import create_round, current_round
 
 from .. import embeds
 from ..db import guild_for, player_for, run_db
@@ -58,7 +73,7 @@ def named_channel_id(interaction: discord.Interaction,
     """Return the ID of the channel the host named, or None when it named none.
 
     The order of preference between the channels of a game is the domain's, in
-    ``services.target_channel_id``; this only checks that the named channel is
+    ``target_channel_id``; this only checks that the named channel is
     one of this server's.
     """
     if channel is None:
@@ -86,7 +101,7 @@ def named_ping_role_id(interaction: discord.Interaction,
     """Return the ID of the role the host named, or None when it named none.
 
     Which role a game pings is the domain's prerogative, in
-    ``services.target_ping_role_id``; this only checks that the bot may use it.
+    ``target_ping_role_id``; this only checks that the bot may use it.
     """
     if role is None:
         return None
@@ -165,10 +180,10 @@ async def question_autocomplete(
     """Offer the questions of this server's library the game did not use yet."""
     try:
         guild = await guild_for(interaction)
-        game = await run_db(services.active_game, guild)
+        game = await run_db(active_game, guild)
         if game is None:
             return []
-        questions = await run_db(services.question_choices, game, current)
+        questions = await run_db(question_choices, game, current)
         return [app_commands.Choice(name=option_label(choice),
                                     value=str(choice['pk']))
                 for choice in questions]
@@ -183,10 +198,10 @@ async def queued_autocomplete(
     """Offer the questions queued for the game of this server."""
     try:
         guild = await guild_for(interaction)
-        game = await run_db(services.active_game, guild)
+        game = await run_db(active_game, guild)
         if game is None:
             return []
-        queued = await run_db(services.queued_choices, game, current)
+        queued = await run_db(queued_choices, game, current)
         return [app_commands.Choice(name=option_label(choice),
                                     value=str(choice['pk']))
                 for choice in queued]
@@ -201,7 +216,7 @@ async def game_autocomplete(
     """Offer the games of this server whose questions can be copied."""
     try:
         guild = await guild_for(interaction)
-        games = await run_db(services.game_choices, guild, None, current)
+        games = await run_db(game_choices, guild, None, current)
         return [app_commands.Choice(name=option_label(choice),
                                     value=str(choice['pk']))
                 for choice in games]
@@ -258,7 +273,7 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
-            games = await run_db(services.games_count, guild)
+            games = await run_db(games_count, guild)
             await interaction.followup.send(
                 f'Pong! {self.bot.latency * 1000:.0f} ms - '
                 f'{games} game(s) in this server.',
@@ -437,18 +452,18 @@ class GameCog(commands.Cog):
         The option checks run before the host check, so only a host may see the
         panels.
         """
-        host = await run_db(services.is_host, guild, interaction.user)
-        game = await run_db(services.active_game, guild) if host else None
+        host = await run_db(is_host, guild, interaction.user)
+        game = await run_db(active_game, guild) if host else None
         if game is None:
             await interaction.followup.send(str(error), ephemeral=True)
         elif game.is_preparing:
             await self.send_setup_panel(
-                interaction, await run_db(services.panel_data, game),
+                interaction, await run_db(panel_data, game),
                 str(error))
         else:
             await self.send_panel(
                 interaction,
-                host_text(await run_db(services.game_summary, game), str(error)))
+                host_text(await run_db(game_summary, game), str(error)))
 
     async def setup_game(self, interaction: discord.Interaction, scoring: str,
                          name: str = '', quiz_type: str = '',
@@ -460,13 +475,13 @@ class GameCog(commands.Cog):
             guild = await guild_for(interaction)
             channel_id = named_channel_id(interaction, channel)
             ping_role_id = named_ping_role_id(interaction, role)
-            game = await run_db(services.create_game, guild, channel_id,
+            game = await run_db(create_game, guild, channel_id,
                                 interaction.user, scoring, name=name,
                                 quiz_type=quiz_type or QuizType.BLIND_TEST,
                                 state=Game.State.SETUP,
                                 invoking_id=interaction.channel_id,
                                 ping_role_id=ping_role_id)
-            data = await run_db(services.panel_data, game)
+            data = await run_db(panel_data, game)
             await self.send_setup_panel(interaction, data)
         except PermissionError:
             await interaction.followup.send(
@@ -504,19 +519,19 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
-            await run_db(services.require_host, guild, interaction.user)
-            game = await run_db(services.active_game, guild)
+            await run_db(require_host, guild, interaction.user)
+            game = await run_db(active_game, guild)
             if game is None:
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             if game.is_preparing:
                 await self.send_setup_panel(
-                    interaction, await run_db(services.panel_data, game))
+                    interaction, await run_db(panel_data, game))
             else:
                 await self.send_panel(
                     interaction,
-                    host_text(await run_db(services.game_summary, game)))
+                    host_text(await run_db(game_summary, game)))
         except PermissionError as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -534,13 +549,13 @@ class GameCog(commands.Cog):
         await self.defer(interaction, update_panel=True)
         try:
             guild = await guild_for(interaction)
-            game = await run_db(services.active_game, guild)
+            game = await run_db(active_game, guild)
             if game is None:
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result = await run_db(operation, game, interaction.user, *args)
-            data = await run_db(services.panel_data, game)
+            data = await run_db(panel_data, game)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -561,25 +576,25 @@ class GameCog(commands.Cog):
                               values: 'list[str]') -> bool:
         """Queue the questions the host picked in the setup panel."""
         return await self.setup_flow(
-            interaction, services.queue_questions, added_text,
+            interaction, queue_questions, added_text,
             [int(value) for value in values])
 
     async def drop_selection(self, interaction: discord.Interaction,
                              values: 'list[str]') -> bool:
         """Drop the queued questions the host picked."""
         return await self.setup_flow(
-            interaction, services.unqueue_questions, dropped_text,
+            interaction, unqueue_questions, dropped_text,
             [int(value) for value in values])
 
     async def copy_selection(self, interaction: discord.Interaction,
                              value: str) -> bool:
         """Queue the questions of the game the host picked."""
         return await self.setup_flow(
-            interaction, services.copy_questions_by_pk, added_text, int(value))
+            interaction, copy_questions_by_pk, added_text, int(value))
 
     async def clear(self, interaction: discord.Interaction) -> bool:
         """Empty the queue of the game."""
-        return await self.setup_flow(interaction, services.clear_queue,
+        return await self.setup_flow(interaction, clear_queue,
                                      dropped_text)
 
     async def copy_questions(self, interaction: discord.Interaction,
@@ -597,13 +612,13 @@ class GameCog(commands.Cog):
         await self.defer(interaction, update_panel=True)
         try:
             guild = await guild_for(interaction)
-            game = await run_db(services.active_game, guild)
+            game = await run_db(active_game, guild)
             if game is None:
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result, broadcast = await run_db(
-                services.announce_game, game, interaction.user, claim=True)
+                announce_game, game, interaction.user, claim=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -636,13 +651,13 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
-            game = await run_db(services.active_game, guild)
+            game = await run_db(active_game, guild)
             if game is None:
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result, broadcast = await run_db(
-                services.open_round, game, interaction.user, claim=True)
+                open_round, game, interaction.user, claim=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -669,18 +684,18 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
-            game = await run_db(services.active_game, guild)
+            game = await run_db(active_game, guild)
             if game is None:
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
-            round_ = await run_db(services.current_round, game)
+            round_ = await run_db(current_round, game)
             if round_ is None:
                 await interaction.followup.send(
                     'No round is running yet.', ephemeral=True)
                 return False
             result, broadcast = await run_db(
-                services.close_round, round_, interaction.user, claim=True)
+                close_round, round_, interaction.user, claim=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -762,17 +777,17 @@ class GameCog(commands.Cog):
             posted = await self._deliver(broadcast, payload, fallback)
         except Exception as error:
             logger.exception('Failed to post broadcast %s', broadcast.pk)
-            await run_db(services.mark_broadcast_failed, broadcast, str(error))
+            await run_db(mark_broadcast_failed, broadcast, str(error))
             raise
-        await run_db(services.mark_broadcast_sent, broadcast,
+        await run_db(mark_broadcast_sent, broadcast,
                      [message.id for message in posted])
         return posted
 
     async def deliver_broadcast(self, broadcast: Broadcast,
                                 ) -> list[discord.Message]:
         """Take a broadcast this client owes and post it, unless it was taken."""
-        payload = await run_db(services.broadcast_payload, broadcast)
-        if not await run_db(services.claim_broadcast, broadcast.pk):
+        payload = await run_db(broadcast_payload, broadcast)
+        if not await run_db(claim_broadcast, broadcast.pk):
             logger.debug('Broadcast %s was already claimed', broadcast.pk)
             return []
         return await self.post_broadcast(broadcast, payload)
@@ -784,7 +799,7 @@ class GameCog(commands.Cog):
 
     async def flush_broadcasts(self) -> None:
         """Post every broadcast this client owes, one failure not stopping the rest."""
-        for broadcast in await run_db(services.pending_broadcasts):
+        for broadcast in await run_db(pending_broadcasts):
             try:
                 await self.deliver_broadcast(broadcast)
             except Exception:
@@ -795,13 +810,13 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
-            await run_db(services.require_host, guild, interaction.user)
-            game = await run_db(services.active_game, guild)
+            await run_db(require_host, guild, interaction.user)
+            game = await run_db(active_game, guild)
             if game is None:
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
-            choices = await run_db(services.question_choices, game)
+            choices = await run_db(question_choices, game)
             if not choices:
                 await interaction.followup.send(
                     'No unplayed question left. Add more questions in the admin.',
@@ -826,7 +841,7 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
-            game = await run_db(services.active_game, guild)
+            game = await run_db(active_game, guild)
             if game is None:
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
@@ -835,8 +850,8 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     'That question no longer exists.', ephemeral=True)
                 return False
-            chosen = await run_db(services.question_by_pk, int(question))
-            result = await run_db(services.create_round, game,
+            chosen = await run_db(question_by_pk, int(question))
+            result = await run_db(create_round, game,
                                   interaction.user, chosen, quiz_type)
             await interaction.followup.send(
                 round_note('Round {} queued for {}: {}.'.format(
@@ -866,7 +881,7 @@ class GameCog(commands.Cog):
                                             ephemeral=True)
             return False
         return await self.setup_flow(
-            interaction, services.unqueue_questions, unqueued_text,
+            interaction, unqueue_questions, unqueued_text,
             [int(question)])
 
     async def end_game(self, interaction: discord.Interaction) -> bool:
@@ -874,7 +889,7 @@ class GameCog(commands.Cog):
         await self.defer(interaction, update_panel=True)
         try:
             guild = await guild_for(interaction)
-            game = await run_db(services.active_game, guild)
+            game = await run_db(active_game, guild)
             if game is None:
                 await self.respond(
                     interaction, NO_QUIZ_RUNNING,
@@ -882,7 +897,7 @@ class GameCog(commands.Cog):
                 return False
             announced = not game.is_preparing
             result, posts = await run_db(
-                services.close_game, game, interaction.user, claim=True)
+                close_game, game, interaction.user, claim=True)
             if not announced:
                 # A game never announced closes without a public recap.
                 await self.respond(
@@ -971,15 +986,15 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
-            game = await run_db(services.active_game, guild)
-            round_ = (await run_db(services.current_round, game)
+            game = await run_db(active_game, guild)
+            round_ = (await run_db(current_round, game)
                       if game is not None else None)
             if round_ is None:
                 await interaction.followup.send(
                     'No round is running yet.', ephemeral=True)
                 return
             self.cache_form(message_id,
-                            await run_db(services.guess_form, round_))
+                            await run_db(guess_form, round_))
             await interaction.followup.send(
                 'Your answer form is ready.', ephemeral=True,
                 view=AnswerFormPanel(self, message_id))
@@ -1006,22 +1021,22 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         try:
             guild = await guild_for(interaction)
-            game = await run_db(services.active_game, guild)
+            game = await run_db(active_game, guild)
             if game is None:
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
-            round_ = await run_db(services.current_round, game)
+            round_ = await run_db(current_round, game)
             if round_ is None:
                 await interaction.followup.send(
                     'No round is running yet.', ephemeral=True)
                 return False
             player = await player_for(interaction.user)
             if choice_pk is None:
-                await run_db(services.submit_guess, round_, player, answer,
+                await run_db(submit_guess, round_, player, answer,
                              secondary_answer)
             else:
-                await run_db(services.submit_multiple_choice, round_, player,
+                await run_db(submit_multiple_choice, round_, player,
                              choice_pk, secondary_answer)
             await interaction.followup.send(
                 f'Answer recorded for round {round_.index}. '

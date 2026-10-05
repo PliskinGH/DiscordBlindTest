@@ -33,3 +33,16 @@ def matches_any(guess: str | None, canonical: str | None,
         return True
     return any(normalized_guess == normalize(variant) for variant in variants)
 
+
+def matches_normalized(guess: str | None,
+                       accepted: Iterable[str]) -> bool:
+    """Return True when a guess matches one of already normalized answer forms.
+
+    The forms of an answer are cached in their comparable shape, so a guess is
+    normalized once here rather than again for every variant it may match.
+    """
+    normalized_guess = normalize(guess)
+    if not normalized_guess:
+        return False
+    return normalized_guess in set(accepted)
+

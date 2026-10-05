@@ -8,14 +8,19 @@ from django.utils.translation import gettext_lazy as _
 from django.views import View
 from django.views.generic import TemplateView
 
-from blindtest import services
 
 from discordcore.mentions import parse_mention
+from blindtest.services.guilds import (add_host, clear_default_channel,
+                                       clear_default_ping_role,
+                                       default_channel_of,
+                                       default_ping_role_of, hosts_of,
+                                       remove_host, set_default_channel,
+                                       set_default_ping_role)
 
 from .. import discord_api
 from ..forms import (ChannelForm, HostRoleForm, HostUserForm, PingRoleForm,
                      form_errors)
-from ..permissions import AdminRequired, require_admin, require_guild
+from ..permissions import AdminRequired, require_admin_member, require_guild
 
 CLEAR = 'clear'
 REMOVE = 'remove'
@@ -87,14 +92,14 @@ class SettingsView(AdminRequired, TemplateView):
         guild = require_guild(guild_id)
         channels = discord_api.fetch_bot_channels(guild_id)
         roles = discord_api.fetch_bot_roles(guild_id)
-        channel_id = services.default_channel_of(guild)
-        ping_role_id = services.default_ping_role_of(guild)
+        channel_id = default_channel_of(guild)
+        ping_role_id = default_ping_role_of(guild)
         context.update(
             guild=guild,
             channel=discord_api.channel_label(guild_id, channel_id),
             ping_role=discord_api.role_label(guild_id, ping_role_id),
             hosts=discord_api.host_labels(
-                guild_id, services.hosts_of(guild)),
+                guild_id, hosts_of(guild)),
             channel_form=ChannelForm(
                 options=channels, current=channel_id,
                 action=reverse('webadmin:setting_channel',
@@ -118,19 +123,19 @@ class ChannelView(AdminRequired, View):
     def post(self, request, *args, **kwargs):
         guild_id = int(kwargs['discord_guild_id'])
         guild = require_guild(guild_id)
-        member = require_admin(request, guild_id)
+        member = require_admin_member(request, guild_id)
         if request.POST.get('action') == CLEAR:
-            if _apply(request, services.clear_default_channel, guild, member):
+            if _apply(request, clear_default_channel, guild, member):
                 messages.success(request, 'The games follow the host again.')
             return _back(guild_id)
         form = ChannelForm(
             request.POST, options=discord_api.fetch_bot_channels(guild_id),
-            current=services.default_channel_of(guild))
+            current=default_channel_of(guild))
         if not form.is_valid():
             messages.error(request, form_errors(form))
             return _back(guild_id)
         channel_id = int(form.cleaned_data['channel_id'])
-        if _apply(request, services.set_default_channel, guild, channel_id,
+        if _apply(request, set_default_channel, guild, channel_id,
                   member):
             label = discord_api.channel_label(guild_id, channel_id)
             messages.success(request, f'Quizzes are now played in {label}.')
@@ -145,19 +150,19 @@ class PingRoleView(AdminRequired, View):
     def post(self, request, *args, **kwargs):
         guild_id = int(kwargs['discord_guild_id'])
         guild = require_guild(guild_id)
-        member = require_admin(request, guild_id)
+        member = require_admin_member(request, guild_id)
         if request.POST.get('action') == CLEAR:
-            if _apply(request, services.clear_default_ping_role, guild, member):
+            if _apply(request, clear_default_ping_role, guild, member):
                 messages.success(request, 'The games ping nobody by default.')
             return _back(guild_id)
         form = PingRoleForm(
             request.POST, options=discord_api.fetch_bot_roles(guild_id),
-            current=services.default_ping_role_of(guild))
+            current=default_ping_role_of(guild))
         if not form.is_valid():
             messages.error(request, form_errors(form))
             return _back(guild_id)
         role_id = int(form.cleaned_data['role_id'])
-        if _apply(request, services.set_default_ping_role, guild, role_id, member):
+        if _apply(request, set_default_ping_role, guild, role_id, member):
             label = discord_api.role_label(guild_id, role_id)
             messages.success(request, f'The games now ping {label}.')
         return _back(guild_id)
@@ -171,7 +176,7 @@ class HostsView(AdminRequired, View):
     def post(self, request, *args, **kwargs):
         guild_id = int(kwargs['discord_guild_id'])
         guild = require_guild(guild_id)
-        member = require_admin(request, guild_id)
+        member = require_admin_member(request, guild_id)
         removed = request.POST.get('action') == REMOVE
         if removed:
             mention = request.POST.get('mention', '')
@@ -179,7 +184,7 @@ class HostsView(AdminRequired, View):
             mention = self._mention_of(request, guild_id)
             if mention is None:
                 return _back(guild_id)
-        operation = services.remove_host if removed else services.add_host
+        operation = remove_host if removed else add_host
         if _apply(request, operation, guild, mention, member):
             messages.success(request, f'{mention} can{"not " if removed else ""} '
                                       f'host here.')

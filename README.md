@@ -184,4 +184,5 @@ The web process offers an alternative interface (mainly for hosts, but can also 
   - Feature parity with the discord bot, with the host controls and also the guess from the players.
   - Every change is recorded as a **broadcast** and posted by the bot holding the Discord connection, so everything is posted on the Discord channel even if acted from the web.
   - The live parts of the control room and of the answer page follow the game with [htmx](https://htmx.org): the round, the number of answers and the standings update by themselves, so an answer given in Discord shows up without reloading.
+  - The control room lists the recent posts of its game, of every status, and a post that failed can be queued again.
   - Questions to queue and games to copy from are searched server-side. The search needs a cache shared by every process that serves the web admin: set `REDIS_URL` in production, since the in-memory cache of a single worker will not answer a search another worker is asked for.

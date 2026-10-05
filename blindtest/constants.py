@@ -28,6 +28,13 @@ BROADCAST_CLAIM_TIMEOUT = 300
 BROADCAST_BATCH = 20
 # How much of a failure reason a broadcast keeps.
 BROADCAST_ERROR_LIMIT = 500
+# How long to wait before the attempt after a failed one, and the longest wait.
+BROADCAST_RETRY_BASE_SECONDS = 30
+BROADCAST_RETRY_MAX_SECONDS = 3600
+# How many times a post is tried before it is given up on.
+BROADCAST_MAX_ATTEMPTS = 6
+# How many stuck posts the dashboard lists.
+BROADCAST_PANEL_SIZE = 20
 # How many questions a library page lists at once.
 LIBRARY_PAGE_SIZE = 50
 

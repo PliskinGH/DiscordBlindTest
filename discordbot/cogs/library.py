@@ -5,8 +5,11 @@ import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
+from blindtest.services.library import (add_answer, add_question, add_variant,
+                                        edit_question, library_choices,
+                                        remove_variant, split_answers,
+                                        variants_of)
 
-from blindtest import services
 
 from .. import embeds
 from ..db import guild_for, run_db
@@ -36,7 +39,7 @@ async def question_autocomplete(
     """Offer the questions of this server's own library."""
     try:
         guild = await guild_for(interaction)
-        questions = await run_db(services.library_choices, guild, current)
+        questions = await run_db(library_choices, guild, current)
         return [app_commands.Choice(name=option_label(choice),
                                     value=str(choice['pk']))
                 for choice in questions]
@@ -71,7 +74,7 @@ class LibraryCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            answer = await run_db(services.add_answer, guild,
+            answer = await run_db(add_answer, guild,
                                   interaction.user, text)
             await interaction.followup.send(
                 f'Answer saved: **{answer.text}**.', ephemeral=True)
@@ -91,7 +94,7 @@ class LibraryCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            saved = await run_db(services.add_variant, guild,
+            saved = await run_db(add_variant, guild,
                                  interaction.user, answer, text)
             await interaction.followup.send(
                 f'Variant saved: **{saved.text}**.', ephemeral=True)
@@ -111,7 +114,7 @@ class LibraryCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            await run_db(services.remove_variant, guild,
+            await run_db(remove_variant, guild,
                          interaction.user, answer, text)
             await interaction.followup.send(
                 f'Variant dropped: **{text.strip()}**.', ephemeral=True)
@@ -130,7 +133,7 @@ class LibraryCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            variants = await run_db(services.variants_of, guild,
+            variants = await run_db(variants_of, guild,
                                     interaction.user, answer)
             shown = ', '.join(f'**{text}**' for text in variants)
             await interaction.followup.send(
@@ -158,10 +161,10 @@ class LibraryCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
-            expected, expected_variants = services.split_answers(answer)
-            secondary, secondary_variants = services.split_answers(artist)
+            expected, expected_variants = split_answers(answer)
+            secondary, secondary_variants = split_answers(artist)
             result = await run_db(
-                services.add_question, guild, interaction.user, expected,
+                add_question, guild, interaction.user, expected,
                 prompt=prompt, secondary_text=secondary, year=year, album=album,
                 media_url=media, choices=choices.split(','),
                 expected_variants=expected_variants,
@@ -206,7 +209,7 @@ class LibraryCog(commands.Cog):
             return
         try:
             guild = await guild_for(interaction)
-            result = await run_db(services.edit_question, guild,
+            result = await run_db(edit_question, guild,
                                   interaction.user, question,
                                   **given_fields(answer=answer,
                                                  artist=artist,

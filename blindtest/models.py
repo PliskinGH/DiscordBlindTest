@@ -342,7 +342,8 @@ class Broadcast(models.Model):
         PENDING = 'PENDING', _('waiting to be posted')
         CLAIMED = 'CLAIMED', _('being posted')
         SENT = 'SENT', _('posted')
-        FAILED = 'FAILED', _('could not be posted')
+        FAILED = 'FAILED', _('waiting to be tried again')
+        DEAD = 'DEAD', _('given up on')
 
     game = models.ForeignKey(Game, on_delete=models.CASCADE,
                              related_name='broadcasts', verbose_name=_('game'))
@@ -358,13 +359,17 @@ class Broadcast(models.Model):
                                    default=None)
     message_ids = models.JSONField(_('message ids'), default=list, blank=True)
     error = models.TextField(_('error'), blank=True)
+    attempts = models.PositiveSmallIntegerField(_('attempts'), default=0)
+    next_attempt_at = models.DateTimeField(_('next attempt at'), blank=True,
+                                          null=True, default=None)
     created_at = models.DateTimeField(_('created at'), auto_now_add=True)
 
     class Meta:
         verbose_name = _('broadcast')
         verbose_name_plural = _('broadcasts')
         ordering = ('created_at', 'pk')
-        indexes = [models.Index(fields=['status', 'created_at'])]
+        indexes = [models.Index(fields=['status', 'created_at']),
+                   models.Index(fields=['status', 'next_attempt_at'])]
 
     def __str__(self) -> str:
         return f'{self.game} - {self.Kind(self.kind).display_name}'

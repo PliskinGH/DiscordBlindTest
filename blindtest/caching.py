@@ -4,10 +4,10 @@ A guild plays the questions of two libraries, its own and the global one, so the
 keys of its lists carry the version of both and an edit of either is seen at once.
 """
 
-from discordcore.cache import guild_scope, scoped
+from discordcore.cache import forget, guild_scope, scoped
 from discordcore.models import Guild
 
-from .models import Game
+from .models import Answer, Game, Question
 
 # Rows a rendered list may hold before its query is left to run every time.
 LIBRARY_CACHE_LIMIT = 1000
@@ -51,6 +51,25 @@ def queued_options_key(game: Game) -> str:
     """Return the key of the rendered options of the rounds a game queued."""
     return scoped('bt:queued', game_scope(game.pk),
                   library_scope(game.guild_id), library_scope(None))
+
+
+def answer_forms_key(question: Question) -> str:
+    """Return the key of the answer forms the questions of a guild accept.
+
+    The forms depend on the accepted variants of the answers, and a variant
+    belongs to a guild, so one key per guild is what an edit has to drop.
+    """
+    return scoped('bt:forms', guild_scope(question.guild_id))
+
+
+def forget_answer_forms(answer: Answer) -> None:
+    """Drop the cached forms of the questions that use an edited answer."""
+    forget(scoped('bt:forms', guild_scope(answer.guild_id)))
+
+
+def active_game_key(guild: Guild) -> str:
+    """Return the key of the game a guild is playing."""
+    return scoped('bt:active', guild_scope(guild.pk))
 
 
 def game_options_key(guild: Guild) -> str:

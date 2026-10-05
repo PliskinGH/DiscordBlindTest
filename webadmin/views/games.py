@@ -8,14 +8,24 @@ from django.views import View
 from django.views.generic import TemplateView
 from django_select2.views import AutoResponseView
 
-from blindtest import services
 from blindtest.models import Game, QuizType
+from blindtest.services.broadcasts import (announce_game, close_game,
+                                           close_round, game_broadcasts,
+                                           open_round)
+from blindtest.services.games import (active_game, clear_queue, control_state,
+                                      copy_questions_by_pk, create_game,
+                                      game_by_pk, game_rows, queue_questions,
+                                      queued_choices, unqueue_questions)
+from blindtest.services.guessing import (guess_form, submit_guess,
+                                         submit_multiple_choice)
+from blindtest.services.guilds import is_host
+from blindtest.services.rounds import current_round
 
 from .. import discord_api
 from ..forms import (ChoiceGuessForm, CopyForm, GuessForm, QueueForm,
                      SetupGameForm, UnqueueForm, form_errors)
 from ..permissions import (GuildAccessMixin, HostRequired, member_for,
-                           require_guild, require_host)
+                           require_guild, require_host_member)
 
 CLEAR = 'clear'
 
@@ -34,7 +44,7 @@ def _guild_id(kwargs) -> int:
 def _game(request, kwargs) -> Game:
     """Return the game the URL names, refusing one of another server."""
     try:
-        return services.game_by_pk(require_guild(_guild_id(kwargs)),
+        return game_by_pk(require_guild(_guild_id(kwargs)),
                                    int(kwargs['game_pk']))
     except ValueError as error:
         raise Http404(str(error)) from error
@@ -42,12 +52,12 @@ def _game(request, kwargs) -> Game:
 
 def _host_of(request, kwargs):
     """Return the member the session knows, refusing one that may not host."""
-    return require_host(request, _guild_id(kwargs))
+    return require_host_member(request, _guild_id(kwargs))
 
 
 def _guess_form(round_, data=None):
     """Return the answer form of a round, of the kind its type is played with."""
-    display = services.guess_form(round_)
+    display = guess_form(round_)
     if display['type'] == QuizType.MULTIPLE_CHOICE:
         return ChoiceGuessForm(data, options=display['options'])
     return GuessForm(data)
@@ -60,7 +70,7 @@ def _hosts(request, game) -> bool:
     not ask Discord who the player is on every poll.
     """
     guild = require_guild(game.guild.discord_id)
-    return services.is_host(guild, member_for(request, guild.discord_id))
+    return is_host(guild, member_for(request, guild.discord_id))
 
 
 def _state(request, game, is_host: bool = False) -> dict:
@@ -69,8 +79,12 @@ def _state(request, game, is_host: bool = False) -> dict:
     ``is_host`` decides whether the host controls are part of it, so the same
     partial serves the control room and the answer page.
     """
-    state = services.control_state(game, request.user)
-    return {**state, 'is_host': is_host}
+    state = control_state(game, request.user)
+    back = request.get_full_path()
+    if not is_host:
+        return {**state, 'is_host': False, 'broadcasts': [], 'retry_back': back}
+    return {**state, 'is_host': True, 'broadcasts': game_broadcasts(game),
+            'retry_back': back}
 
 
 def _guess_page(request, game, round_, data=None):
@@ -91,8 +105,8 @@ class GamesView(HostRequired, TemplateView):
         guild_id = _guild_id(self.kwargs)
         guild = require_guild(guild_id)
         context.update(
-            guild=guild, games=services.game_rows(guild),
-            active=services.active_game(guild),
+            guild=guild, games=game_rows(guild),
+            active=active_game(guild),
             setup_form=SetupGameForm(
                 action=reverse('webadmin:game_setup', args=[guild_id]),
                 channels=discord_api.fetch_bot_channels(guild_id),
@@ -117,7 +131,7 @@ class GameView(HostRequired, TemplateView):
                            game=game),
                        unqueue_form=UnqueueForm(
                            action=reverse('webadmin:game_unqueue', args=args),
-                           options=services.queued_choices(game)),
+                           options=queued_choices(game)),
                        copy_form=CopyForm(
                            action=reverse('webadmin:game_copy', args=args),
                            game=game),
@@ -180,7 +194,7 @@ class SetupGameView(HostRequired, View):
             messages.error(request, form_errors(form))
             return redirect('webadmin:games', discord_guild_id=guild_id)
         try:
-            game = services.create_game(
+            game = create_game(
                 require_guild(guild_id),
                 host_member=_host_of(request, kwargs),
                 state=Game.State.SETUP, **form.service_kwargs())
@@ -198,7 +212,7 @@ class PublishGameView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         game = _game(request, kwargs)
         try:
-            result, _broadcast = services.announce_game(
+            result, _broadcast = announce_game(
                 game, _host_of(request, kwargs))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
@@ -220,7 +234,7 @@ class QueueView(HostRequired, View):
             messages.error(request, form_errors(form))
             return _back(game)
         try:
-            result = services.queue_questions(
+            result = queue_questions(
                 game, member, form.pks(), form.cleaned_data['quiz_type'])
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
@@ -240,14 +254,14 @@ class UnqueueView(HostRequired, View):
         member = _host_of(request, kwargs)
         try:
             if request.POST.get('action') == CLEAR:
-                dropped = services.clear_queue(game, member)
+                dropped = clear_queue(game, member)
             else:
                 form = UnqueueForm(request.POST,
-                                   options=services.queued_choices(game))
+                                   options=queued_choices(game))
                 if not form.is_valid():
                     messages.error(request, form_errors(form))
                     return _back(game)
-                dropped = services.unqueue_questions(game, member, form.pks())
+                dropped = unqueue_questions(game, member, form.pks())
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
             return _back(game)
@@ -267,7 +281,7 @@ class CopyQuestionsView(HostRequired, View):
             messages.error(request, form_errors(form))
             return _back(game)
         try:
-            result = services.copy_questions_by_pk(
+            result = copy_questions_by_pk(
                 game, member, form.cleaned_data['source'].pk,
                 form.cleaned_data['quiz_type'])
         except (PermissionError, ValueError) as error:
@@ -285,7 +299,7 @@ class NextRoundView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         game = _game(request, kwargs)
         try:
-            result, _broadcast = services.open_round(
+            result, _broadcast = open_round(
                 game, _host_of(request, kwargs))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
@@ -303,8 +317,8 @@ class RevealRoundView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         game = _game(request, kwargs)
         try:
-            result, _broadcast = services.close_round(
-                services.current_round(game), _host_of(request, kwargs))
+            result, _broadcast = close_round(
+                current_round(game), _host_of(request, kwargs))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
             return _back(game)
@@ -320,7 +334,7 @@ class EndGameView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         game = _game(request, kwargs)
         try:
-            _result, _posts = services.close_game(game, _host_of(request, kwargs))
+            _result, _posts = close_game(game, _host_of(request, kwargs))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
             return _back(game)
@@ -363,14 +377,14 @@ class GuessView(GuildAccessMixin, View):
         if not form.is_valid():
             raise ValueError(form_errors(form))
         if isinstance(form, ChoiceGuessForm):
-            services.submit_multiple_choice(
+            submit_multiple_choice(
                 round_, request.user, int(form.cleaned_data['choice']),
                 form.cleaned_data['artist'])
             return
-        services.submit_guess(round_, request.user, **form.service_kwargs())
+        submit_guess(round_, request.user, **form.service_kwargs())
 
     def _round_in_play(self, request, kwargs):
         """Return the game and the round open in it, if any."""
         game = _game(request, kwargs)
-        round_ = services.current_round(game)
+        round_ = current_round(game)
         return game, round_ if round_ is not None and round_.is_active else None

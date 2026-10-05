@@ -96,7 +96,8 @@ class GuessAdmin(admin.ModelAdmin):
 
 @admin.register(Broadcast)
 class BroadcastAdmin(admin.ModelAdmin):
-    list_display = ('id', 'game', 'kind', 'status', 'claimed_at', 'sent_at')
+    list_display = ('id', 'game', 'kind', 'status', 'attempts', 'claimed_at',
+                    'sent_at')
     list_filter = ('kind', 'status')
     search_fields = ('game__name', 'game__host__discord_name')
     date_hierarchy = 'created_at'
@@ -104,8 +105,9 @@ class BroadcastAdmin(admin.ModelAdmin):
                        'message_ids', 'created_at')
     fieldsets = (
         (None, {'fields': ('game', 'kind', 'round', 'status')}),
-        (_('Delivery'), {'fields': ('claimed_at', 'sent_at', 'message_ids',
-                                    'error', 'created_at')}),
+        (_('Delivery'), {'fields': ('attempts', 'next_attempt_at', 'claimed_at',
+                                    'sent_at', 'message_ids', 'error',
+                                    'created_at')}),
     )
 
 

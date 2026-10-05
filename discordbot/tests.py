@@ -14,9 +14,20 @@ from django.test import SimpleTestCase, TransactionTestCase
 
 from blindtest import constants, services
 from blindtest.models import (Answer, Broadcast, Game, Guess, Question, QuizType,
-                            Round)
+                              Round)
 from discordcore.mentions import user_mention
 from discordcore.models import Guild, Player
+from blindtest.services.broadcasts import (claim_broadcast, close_round,
+                                           open_round)
+from blindtest.services.games import active_game, create_game, finish_game
+from blindtest.services.guessing import submit_guess
+from blindtest.services.guilds import (add_host, require_host,
+                                       set_default_channel,
+                                       set_default_ping_role)
+from blindtest.services.library import (add_question, edit_question,
+                                        question_choices)
+from blindtest.services.rounds import (create_round, current_round,
+                                       queued_count, reveal_round, start_round)
 
 from . import embeds
 from .bot import create_bot
@@ -507,7 +518,7 @@ class RunDbTests(TransactionTestCase):
     def test_domain_errors_cross_the_bridge(self) -> None:
         guild = Guild.objects.create(discord_id=1, name='Server')
         with self.assertRaises(PermissionError):
-            asyncio.run(run_db(services.require_host, guild, FakeMember(43)))
+            asyncio.run(run_db(require_host, guild, FakeMember(43)))
 
 
 class FlowResultTests(TransactionTestCase):
@@ -521,18 +532,18 @@ class FlowResultTests(TransactionTestCase):
         def build() -> dict:
             guild = Guild.objects.create(discord_id=1, name='Server')
             host = FakeMember(42)
-            services.add_host(
+            add_host(
                 guild, user_mention(host.id), FakeMember(42, manage_guild=True))
-            game = services.create_game(guild, 100, host)
+            game = create_game(guild, 100, host)
             question = Question.objects.create(
                 expected_answer=Answer.objects.create(text='Song'),
                 secondary_answer=Answer.objects.create(text='Band'))
             round_ = Round.objects.get(
-                pk=services.start_round(game, host, question)['round_id'])
-            services.submit_guess(
+                pk=start_round(game, host, question)['round_id'])
+            submit_guess(
                 round_, Player.objects.from_discord(FakeMember(43)),
                 'Song', 'Band')
-            return services.reveal_round(round_, host)
+            return reveal_round(round_, host)
         return asyncio.run(run_db(build))
 
     def test_the_reveal_crosses_the_bridge_without_lazy_queries(self) -> None:
@@ -545,13 +556,13 @@ class FlowResultTests(TransactionTestCase):
         """Build a game with one unplayed question and return its picker choices."""
         guild = Guild.objects.create(discord_id=1, name='Server')
         host = FakeMember(42)
-        services.add_host(
+        add_host(
             guild, user_mention(host.id), FakeMember(42, manage_guild=True))
-        game = services.create_game(guild, 100, host)
+        game = create_game(guild, 100, host)
         Question.objects.create(
             expected_answer=Answer.objects.create(text='Song'),
             secondary_answer=Answer.objects.create(text='Band'))
-        return services.question_choices(game)
+        return question_choices(game)
 
     def test_picker_choices_cross_the_bridge_without_lazy_queries(self) -> None:
         async def check() -> None:
@@ -589,19 +600,19 @@ class FlowTestCase(TransactionTestCase):
                      ping_role_id: int | None = None) -> None:
         """Create the rows a flow works on, as the bot would have."""
         guild = Guild.objects.create(discord_id=1, name='Server')
-        services.add_host(guild, user_mention(42),
+        add_host(guild, user_mention(42),
                           FakeMember(42, manage_guild=True))
-        game = services.create_game(guild, 100, FakeMember(42),
+        game = create_game(guild, 100, FakeMember(42),
                                    quiz_type=quiz_type or QuizType.BLIND_TEST,
                                    ping_role_id=ping_role_id)
-        services.start_round(game, FakeMember(42),
+        start_round(game, FakeMember(42),
                              self.question(quiz_type, 'Song', 'Band'))
         self.question(quiz_type, 'Spare', 'Spare Band')
 
     def prepare_guild(self) -> Guild:
         """Create the guild row and its host, as the first command would."""
         guild = Guild.objects.create(discord_id=1, name='Server')
-        services.add_host(guild, user_mention(42),
+        add_host(guild, user_mention(42),
                           FakeMember(42, manage_guild=True))
         return guild
 
@@ -661,7 +672,7 @@ class EndGameFlowTests(FlowTestCase):
     def test_ending_a_game_whose_round_is_revealed_posts_only_the_recap(self) -> None:
         self.create_game()
         interaction = FakeInteraction()
-        services.reveal_round(services.current_round(Game.objects.get()),
+        reveal_round(current_round(Game.objects.get()),
                               FakeMember(42))
         asyncio.run(GameCog(create_bot()).end_game(interaction))
         [recap] = interaction.channel.embeds
@@ -702,9 +713,9 @@ class BroadcastFlowTests(FlowTestCase):
 
     def _record_a_round(self) -> None:
         """Open a round the way a caller without a client would."""
-        game = services.active_game(Guild.objects.get(discord_id=1))
-        services.reveal_round(services.current_round(game), FakeMember(42))
-        services.open_round(game, FakeMember(42))
+        game = active_game(Guild.objects.get(discord_id=1))
+        reveal_round(current_round(game), FakeMember(42))
+        open_round(game, FakeMember(42))
 
     def test_the_client_posts_a_recorded_round(self) -> None:
         self.create_game()
@@ -716,7 +727,7 @@ class BroadcastFlowTests(FlowTestCase):
         [embed] = channel.embeds
         self.assertIn('Round 2', embed.title)
         self.assertEqual(cog.forms[message.id]['round_id'],
-                         services.current_round(Game.objects.get()).pk)
+                         current_round(Game.objects.get()).pk)
 
     def test_a_recorded_post_is_made_once(self) -> None:
         self.create_game()
@@ -734,7 +745,7 @@ class BroadcastFlowTests(FlowTestCase):
         self.create_game()
         self._record_a_round()
         broadcast = Broadcast.objects.get()
-        self.assertTrue(services.claim_broadcast(broadcast.pk))
+        self.assertTrue(claim_broadcast(broadcast.pk))
         channel = FakeChannel()
         asyncio.run(self._cog_posting_to(channel).flush_broadcasts())
         self.assertEqual(channel.messages, [])
@@ -752,8 +763,8 @@ class BroadcastFlowTests(FlowTestCase):
         self.create_game()
         channel = FakeChannel()
         cog = self._cog_posting_to(channel)
-        game = services.active_game(Guild.objects.get(discord_id=1))
-        services.close_round(services.current_round(game), FakeMember(42))
+        game = active_game(Guild.objects.get(discord_id=1))
+        close_round(current_round(game), FakeMember(42))
         asyncio.run(cog.flush_broadcasts())
         titles = [embed.title for embed in channel.embeds]
         self.assertTrue(any('answer' in title for title in titles), titles)
@@ -764,7 +775,7 @@ class AnswerFlowTests(FlowTestCase):
 
     def _open_round_then_answer(self) -> tuple[FakeInteraction, FakeInteraction]:
         """Open a round as the host, then click its Answer button as a player."""
-        services.reveal_round(Round.objects.get(), FakeMember(42))
+        reveal_round(Round.objects.get(), FakeMember(42))
         host = FakeInteraction()
         player = FakeInteraction(InteractionType.component)
 
@@ -782,7 +793,7 @@ class AnswerFlowTests(FlowTestCase):
         _, player = self._open_round_then_answer()
         self.assertEqual(player.response.deferred, [])
         [modal] = player.response.modals
-        current = services.current_round(Game.objects.get())
+        current = current_round(Game.objects.get())
         self.assertEqual(modal.form['round_id'], current.pk)
         self.assertEqual(modal.form['type'], QuizType.BLIND_TEST)
         self.assertIsNone(modal.pick)
@@ -842,8 +853,8 @@ class AnswerFlowTests(FlowTestCase):
 
     def test_a_prompt_less_round_shows_its_answer_once(self) -> None:
         self.create_game()
-        services.reveal_round(Round.objects.get(), FakeMember(42))
-        services.create_round(Game.objects.get(), FakeMember(42),
+        reveal_round(Round.objects.get(), FakeMember(42))
+        create_round(Game.objects.get(), FakeMember(42),
                               self.question('', 'Zebra', 'Stripes'))
         host = FakeInteraction()
 
@@ -857,7 +868,7 @@ class AnswerFlowTests(FlowTestCase):
 
     def test_the_host_lines_show_the_question_and_its_answer(self) -> None:
         self.create_game(quiz_type=QuizType.MULTIPLE_CHOICE)
-        services.reveal_round(Round.objects.get(), FakeMember(42))
+        reveal_round(Round.objects.get(), FakeMember(42))
         host = FakeInteraction()
 
         async def run() -> None:
@@ -872,7 +883,7 @@ class AnswerFlowTests(FlowTestCase):
         self.create_game()
         Question.objects.filter(expected_answer__text='Spare').update(
             media_url='https://youtu.be/1')
-        services.reveal_round(Round.objects.get(), FakeMember(42))
+        reveal_round(Round.objects.get(), FakeMember(42))
         host = FakeInteraction()
 
         async def run() -> None:
@@ -1022,14 +1033,14 @@ class SetupFlowTests(FlowTestCase):
 
     def test_the_guild_default_redirects_a_game_set_up_elsewhere(self) -> None:
         guild = self.prepare_guild()
-        services.set_default_channel(guild, 555, FakeMember(42, manage_guild=True))
+        set_default_channel(guild, 555, FakeMember(42, manage_guild=True))
         host = FakeInteraction()
         asyncio.run(GameCog(create_bot()).setup_game(host, 'STANDARD', 'Fiesta'))
         self.assertEqual(Game.objects.get().channel_id, 555)
 
     def test_a_named_channel_wins_over_the_guild_default(self) -> None:
         guild = self.prepare_guild()
-        services.set_default_channel(guild, 555, FakeMember(42, manage_guild=True))
+        set_default_channel(guild, 555, FakeMember(42, manage_guild=True))
         channel = FakeGuildChannel(FakeGuild(1), 777, 'quiz')
         host = FakeInteraction()
         asyncio.run(GameCog(create_bot()).setup_game(host, 'STANDARD', 'Fiesta',
@@ -1095,34 +1106,34 @@ class SetupFlowTests(FlowTestCase):
         self.assertIn('1 question(s) queued', click.original_contents[0])
         self.assertEqual(click.followup.sent,
                          ['1 question(s) added, 0 skipped.'])
-        self.assertEqual(services.queued_count(Game.objects.get()), 1)
+        self.assertEqual(queued_count(Game.objects.get()), 1)
 
     def test_the_remove_select_drops_the_picked_questions(self) -> None:
         _cog, panel, _host = self._setup()
         queued = Round.objects.get(
-            pk=services.create_round(
+            pk=create_round(
                                      Game.objects.get(), FakeMember(42),
                                      self.question('', 'Queued', 'Band'))['round_id'])
         select = self._control(panel, SETUP_REMOVE_ID)
         select._values = [str(queued.pk)]
         click = self._click(select)
         self.assertEqual(click.followup.sent, ['1 question(s) dropped.'])
-        self.assertEqual(services.queued_count(Game.objects.get()), 0)
+        self.assertEqual(queued_count(Game.objects.get()), 0)
 
     def test_the_clear_button_empties_the_queue(self) -> None:
         _cog, panel, _host = self._setup()
-        services.create_round(Game.objects.get(), FakeMember(42),
+        create_round(Game.objects.get(), FakeMember(42),
                               self.question('', 'Queued', 'Band'))
         click = self._click(self._control(panel, SETUP_CLEAR_ID))
         self.assertEqual(click.followup.sent, ['1 question(s) dropped.'])
-        self.assertEqual(services.queued_count(Game.objects.get()), 0)
+        self.assertEqual(queued_count(Game.objects.get()), 0)
 
     def test_the_copy_select_queues_the_questions_of_another_game(self) -> None:
         guild = self.prepare_guild()
-        older = services.create_game(guild, 100, FakeMember(42))
-        services.start_round(older, FakeMember(42),
+        older = create_game(guild, 100, FakeMember(42))
+        start_round(older, FakeMember(42),
                              self.question('', 'Old', 'Band'))
-        services.finish_game(older, FakeMember(42))
+        finish_game(older, FakeMember(42))
         host = FakeInteraction()
         asyncio.run(GameCog(create_bot()).setup_game(host, 'STANDARD', 'Fiesta'))
         select = self._control(host.followup.views[0], SETUP_COPY_ID)
@@ -1131,7 +1142,7 @@ class SetupFlowTests(FlowTestCase):
         self.assertEqual(click.followup.sent,
                          ['1 question(s) added, 0 skipped.'])
         self.assertEqual(
-            services.queued_count(Game.objects.get(name='Fiesta')), 1)
+            queued_count(Game.objects.get(name='Fiesta')), 1)
 
 
     def test_publish_announces_the_game_and_swaps_in_the_host_panel(self) -> None:
@@ -1159,7 +1170,7 @@ class SetupFlowTests(FlowTestCase):
 
     def test_the_setup_panel_names_the_role_the_game_pings(self) -> None:
         guild = self.prepare_guild()
-        services.set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
+        set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
         host = FakeInteraction()
         asyncio.run(GameCog(create_bot()).setup_game(host, 'STANDARD', 'Fiesta'))
         summary = host.followup.sent[0].split('\n')[0]
@@ -1212,7 +1223,7 @@ class SetupFlowTests(FlowTestCase):
 
     def test_the_announcement_calls_in_the_role_of_the_game(self) -> None:
         guild = self.prepare_guild()
-        services.set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
+        set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
         host = FakeInteraction()
         cog = GameCog(create_bot())
         asyncio.run(cog.setup_game(host, 'STANDARD', 'Fiesta'))
@@ -1227,8 +1238,8 @@ class SetupFlowTests(FlowTestCase):
 
     def test_a_round_calls_in_the_role_of_the_game(self) -> None:
         guild = self.prepare_guild()
-        services.add_question(guild, FakeMember(42), 'Song')
-        services.set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
+        add_question(guild, FakeMember(42), 'Song')
+        set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
         cog = GameCog(create_bot())
         asyncio.run(cog.setup_game(FakeInteraction(), 'STANDARD', 'Fiesta'))
         asyncio.run(cog.publish(FakeInteraction()))
@@ -1238,7 +1249,7 @@ class SetupFlowTests(FlowTestCase):
 
     def test_a_round_of_a_silent_game_calls_nobody_in(self) -> None:
         guild = self.prepare_guild()
-        services.add_question(guild, FakeMember(42), 'Song')
+        add_question(guild, FakeMember(42), 'Song')
         cog = GameCog(create_bot())
         asyncio.run(cog.setup_game(FakeInteraction(), 'STANDARD', 'Fiesta'))
         asyncio.run(cog.publish(FakeInteraction()))
@@ -1459,7 +1470,7 @@ class LibraryQuestionTests(FlowTestCase):
         super().setUp()
         self.guild = self.prepare_guild()
         self.question = Question.objects.get(
-            pk=services.add_question(
+            pk=add_question(
                                      self.guild, FakeMember(42), 'Song', prompt='Guess it',
                                      secondary_text='Band')['pk'])
         self.label = 'Guess it — answer: Song (Band)'
@@ -1576,7 +1587,7 @@ class LibraryQuestionTests(FlowTestCase):
         self.assertEqual(self.question.album, '')
 
     def test_the_picker_flags_a_question_that_has_a_media_link(self) -> None:
-        services.edit_question(self.guild, FakeMember(42), self.question.pk,
+        edit_question(self.guild, FakeMember(42), self.question.pk,
                                media='https://youtu.be/1')
         choices = asyncio.run(question_autocomplete(FakeInteraction(), 'song'))
         self.assertEqual([(choice.name, choice.value) for choice in choices],
@@ -1637,4 +1648,3 @@ class DeferFirstTests(SimpleTestCase):
                     self.assertTrue(defer, 'the flow never defers')
                     self.assertLess(min(defer), min(work),
                                     'the flow works on the database first')
-

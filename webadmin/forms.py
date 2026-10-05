@@ -8,10 +8,13 @@ from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 from django_select2 import forms as select2_forms
 
-from blindtest import services
 from blindtest.constants import MAX_CHOICES, MAX_YEAR
 from blindtest.models import Game, Question, QuizType, ScoringMode
-from blindtest.services import game_option, question_line, split_answers
+from blindtest.services.games import (copyable_games, create_game,
+                                      game_option)
+from blindtest.services.guessing import submit_guess
+from blindtest.services.library import (add_question, edit_question, question_line,
+                                        queueable_questions, split_answers)
 
 QUESTION_SEARCH_FIELDS = ['prompt__icontains',
                           'expected_answer__text__icontains',
@@ -185,7 +188,7 @@ class AddQuestionForm(QuestionFields):
     """A new question, with the texts its answer accepts."""
 
     def service_kwargs(self) -> dict:
-        """Return what ``services.add_question`` is called with."""
+        """Return what ``add_question`` is called with."""
         data = self.cleaned_data
         secondary, secondary_variants = split_answers(data['artist'])
         return {'expected_text': data['answer'],
@@ -203,7 +206,7 @@ class EditQuestionForm(QuestionFields):
     answer = forms.CharField(label=_('Answer'), max_length=200, required=False)
 
     def service_kwargs(self) -> dict:
-        """Return what ``services.edit_question`` is called with."""
+        """Return what ``edit_question`` is called with."""
         data = self.cleaned_data
         return {'answer': data['answer'], 'artist': data['artist'],
                 'prompt': data['prompt'], 'choices': data['choices'],
@@ -291,7 +294,7 @@ class SetupGameForm(BootstrapForm):
         self.fields['ping_role_id'].choices = picker_choices(roles, None, '@')
 
     def service_kwargs(self) -> dict:
-        """Return what ``services.create_game`` is called with."""
+        """Return what ``create_game`` is called with."""
         data = self.cleaned_data
         return {'channel_id': _given(data['channel_id'], int),
                 'ping_role_id': _given(data['ping_role_id'], int),
@@ -334,7 +337,7 @@ class QueueForm(_QueueForm):
     def __init__(self, *args, game=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         if game is not None:
-            self.fields['questions'].queryset = services.queueable_questions(game)
+            self.fields['questions'].queryset = queueable_questions(game)
             self.fields['questions'].widget.queryset = (
                 self.fields['questions'].queryset)
             self._search_url(game)
@@ -383,7 +386,7 @@ class CopyForm(_QueueForm):
     def __init__(self, *args, game=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         if game is not None:
-            games = services.copyable_games(game.guild, game)
+            games = copyable_games(game.guild, game)
             self.fields['source'].queryset = games
             self.fields['source'].widget.queryset = games
             self.fields['source'].widget.data_url = reverse(
@@ -403,7 +406,7 @@ class GuessForm(BootstrapForm):
         label=_('Artist'), max_length=200, required=False)
 
     def service_kwargs(self) -> dict:
-        """Return what ``services.submit_guess`` is called with."""
+        """Return what ``submit_guess`` is called with."""
         data = self.cleaned_data
         return {'text': data['answer'], 'secondary_text': data['artist']}
 

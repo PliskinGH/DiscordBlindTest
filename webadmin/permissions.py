@@ -7,9 +7,10 @@ from django.core.exceptions import PermissionDenied
 from django.http import Http404
 from django.utils.translation import gettext_lazy as _
 
-from blindtest import services
 from discordcore.members import LocalMember, LocalPermissions, LocalRole
 from discordcore.models import Guild
+from blindtest.services.guilds import (guild_by_discord_id, require_admin,
+                                       require_host)
 
 from . import discord_api
 
@@ -72,23 +73,23 @@ def require_session_guild(request, discord_guild_id: int) -> dict:
 
 def require_guild(discord_guild_id: int) -> Guild:
     """Return the guild the bot has a record of, refusing an unknown server."""
-    guild = services.guild_by_discord_id(discord_guild_id)
+    guild = guild_by_discord_id(discord_guild_id)
     if guild is None:
         raise Http404(_('This server has no quiz record yet.'))
     return guild
 
 
-def require_host(request, discord_guild_id: int) -> LocalMember:
+def require_host_member(request, discord_guild_id: int) -> LocalMember:
     """Return the member, refusing one that may not host in the guild."""
     member = member_for(request, discord_guild_id)
-    services.require_host(require_guild(discord_guild_id), member)
+    require_host(require_guild(discord_guild_id), member)
     return member
 
 
-def require_admin(request, discord_guild_id: int) -> LocalMember:
+def require_admin_member(request, discord_guild_id: int) -> LocalMember:
     """Return the member, refusing one that may not manage the guild."""
     member = member_for(request, discord_guild_id, with_roles=False)
-    services.require_admin(member)
+    require_admin(member)
     return member
 
 
@@ -116,7 +117,7 @@ class HostRequired(GuildAccessMixin):
 
     def check_guild_access(self, request, discord_guild_id: int) -> None:
         try:
-            require_host(request, discord_guild_id)
+            require_host_member(request, discord_guild_id)
         except PermissionError as error:
             raise PermissionDenied(str(error)) from error
 
@@ -126,6 +127,6 @@ class AdminRequired(GuildAccessMixin):
 
     def check_guild_access(self, request, discord_guild_id: int) -> None:
         try:
-            require_admin(request, discord_guild_id)
+            require_admin_member(request, discord_guild_id)
         except PermissionError as error:
             raise PermissionDenied(str(error)) from error

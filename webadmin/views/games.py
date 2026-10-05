@@ -9,14 +9,15 @@ from django.views.generic import TemplateView
 from django_select2.views import AutoResponseView
 
 from blindtest.models import Game, QuizType
-from blindtest.services.broadcasts import (announce_game, close_game,
-                                           close_round, game_broadcasts,
-                                           open_round)
+from blindtest.services.broadcasts import (post_publication, post_game_end,
+                                           post_round_reveal, game_broadcasts,
+                                           post_round_open)
 from blindtest.services.games import (active_game, clear_queue, control_state,
                                       copy_questions_by_pk, create_game,
                                       game_by_pk, game_rows, queue_questions,
                                       queued_choices, unqueue_questions)
-from blindtest.services.guessing import (guess_form, submit_guess,
+from blindtest.services.guessing import (answer_form, round_display,
+                                         submit_guess,
                                          submit_multiple_choice)
 from blindtest.services.guilds import is_host
 from blindtest.services.rounds import current_round
@@ -45,7 +46,7 @@ def _game(request, kwargs) -> Game:
     """Return the game the URL names, refusing one of another server."""
     try:
         return game_by_pk(require_guild(_guild_id(kwargs)),
-                                   int(kwargs['game_pk']))
+                          int(kwargs['game_pk']))
     except ValueError as error:
         raise Http404(str(error)) from error
 
@@ -55,9 +56,9 @@ def _host_of(request, kwargs):
     return require_host_member(request, _guild_id(kwargs))
 
 
-def _guess_form(round_, data=None):
+def _answer_form(round_, data=None):
     """Return the answer form of a round, of the kind its type is played with."""
-    display = guess_form(round_)
+    display = answer_form(round_display(round_))
     if display['type'] == QuizType.MULTIPLE_CHOICE:
         return ChoiceGuessForm(data, options=display['options'])
     return GuessForm(data)
@@ -87,12 +88,12 @@ def _state(request, game, is_host: bool = False) -> dict:
             'retry_back': back}
 
 
-def _guess_page(request, game, round_, data=None):
+def _answer_page(request, game, round_, data=None):
     """Return the answer page of a round, beside what the player answered."""
-    return render(request, 'webadmin/guess.html', {
+    return render(request, 'webadmin/answer.html', {
         'guild': game.guild, 'game': game,
         'state': _state(request, game, _hosts(request, game)),
-        'form': _guess_form(round_, data)})
+        'form': _answer_form(round_, data)})
 
 
 class GamesView(HostRequired, TemplateView):
@@ -135,7 +136,7 @@ class GameView(HostRequired, TemplateView):
                        copy_form=CopyForm(
                            action=reverse('webadmin:game_copy', args=args),
                            game=game),
-                       guess_url=reverse('webadmin:game_guess', args=args),
+                       answer_url=reverse('webadmin:game_answer', args=args),
                        state_url=reverse('webadmin:game_state', args=args))
         return context
 
@@ -205,19 +206,19 @@ class SetupGameView(HostRequired, View):
 
 
 class PublishGameView(HostRequired, View):
-    """Announce a prepared game, leaving the announcement to the worker."""
+    """Publish a prepared game, leaving the publication to the worker."""
 
     http_method_names = ['post', 'options']
 
     def post(self, request, *args, **kwargs):
         game = _game(request, kwargs)
         try:
-            result, _broadcast = announce_game(
+            result, _broadcast = post_publication(
                 game, _host_of(request, kwargs))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
             return _back(game)
-        messages.success(request, f'{result["game_name"]} was announced.')
+        messages.success(request, f'{result["game_name"]} was published.')
         return _back(game)
 
 
@@ -299,7 +300,7 @@ class NextRoundView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         game = _game(request, kwargs)
         try:
-            result, _broadcast = open_round(
+            result, _broadcast = post_round_open(
                 game, _host_of(request, kwargs))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
@@ -317,7 +318,7 @@ class RevealRoundView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         game = _game(request, kwargs)
         try:
-            result, _broadcast = close_round(
+            result, _broadcast = post_round_reveal(
                 current_round(game), _host_of(request, kwargs))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
@@ -334,7 +335,7 @@ class EndGameView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         game = _game(request, kwargs)
         try:
-            _result, _posts = close_game(game, _host_of(request, kwargs))
+            _result, _posts = post_game_end(game, _host_of(request, kwargs))
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
             return _back(game)
@@ -342,7 +343,7 @@ class EndGameView(HostRequired, View):
         return _back(game)
 
 
-class GuessView(GuildAccessMixin, View):
+class AnswerView(GuildAccessMixin, View):
     """Answer the round in play. Any member of the server may, host or not."""
 
     def get(self, request, *args, **kwargs):
@@ -369,11 +370,11 @@ class GuessView(GuildAccessMixin, View):
             else:
                 messages.success(request, 'Your answer is in.')
                 data = None
-        return _guess_page(request, game, round_, data)
+        return _answer_page(request, game, round_, data)
 
     def _submit(self, request, round_, data) -> None:
         """Record the answer the form carries, as the round type expects it."""
-        form = _guess_form(round_, data)
+        form = _answer_form(round_, data)
         if not form.is_valid():
             raise ValueError(form_errors(form))
         if isinstance(form, ChoiceGuessForm):

@@ -16,19 +16,19 @@
   <div class="accordion-item">
     <h2 class="accordion-header">
       <button class="accordion-button" type="button" data-bs-toggle="collapse"
-              data-bs-target="#setup-game">Set up a quiz</button>
+              data-bs-target="#setup-game">Set up a game</button>
     </h2>
     <div id="setup-game" class="accordion-collapse collapse"
          data-bs-parent="#game-forms">
       <div class="accordion-body">
         <p class="text-body-secondary">
-          Setting a quiz up announces nothing. It opens the first round only
-          once you announce it.
+          Setting a game up publishes nothing. It opens the first round only
+          once you publish it.
         </p>
         {% if active %}
         <p class="mb-0">
           <a href="{% url 'webadmin:game' guild.discord_id active.pk %}">
-            Finish {{ active.display_name }} before setting another quiz up.
+            Finish {{ active.display_name }} before setting another game up.
           </a>
         </p>
         {% else %}

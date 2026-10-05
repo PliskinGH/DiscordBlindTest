@@ -47,7 +47,7 @@ def game_by_pk(guild: Guild, game_pk: int) -> Game:
     game = (Game.objects.filter(guild=guild, pk=game_pk)
             .select_related('host').first())
     if game is None:
-        raise ValueError(_("This quiz is not one of this server."))
+        raise ValueError(_("This game is not one of this server."))
     return game
 
 
@@ -84,7 +84,7 @@ def create_game(guild: Guild, channel_id: int | None, host_member: DiscordMember
             raise ValueError(_("A game is being prepared: %(name)s. Publish it "
                                "with /quiz publish, or end it first.")
                              % {'name': active.display_name})
-        raise ValueError(_("A quiz is already running in this server."))
+        raise ValueError(_("A game is already running in this server."))
     game = Game.objects.create(guild=guild, channel_id=target_id,
                                ping_role_id=target_ping_role_id(
                                    guild, ping_role_id),
@@ -116,7 +116,7 @@ def panel_data(game: Game) -> dict:
 
 
 def publish_game(game: Game, host_member: DiscordMember) -> dict:
-    """Publish a game and return what its announcement shows.
+    """Publish a game and return what its publication shows.
     A game being prepared becomes the one the server is playing.
     """
     require_host(game.guild, host_member)
@@ -125,11 +125,11 @@ def publish_game(game: Game, host_member: DiscordMember) -> dict:
     game.state = Game.State.RUNNING
     game.save(update_fields=['state'])
     logger.info('Game %s published', game.pk)
-    return announcement_payload(game)
+    return publication_payload(game)
 
 
-def announcement_payload(game: Game) -> dict:
-    """Return what the announcement of a published game shows."""
+def publication_payload(game: Game) -> dict:
+    """Return what the publication of a published game shows."""
     return {**game_summary(game), 'game_id': game.pk,
             'scoring_label': ScoringMode(game.scoring_mode).display_name,
             'queued': queued_count(game), 'created_at': game.created_at,
@@ -151,7 +151,7 @@ def recap_payload(game: Game, rounds: Iterable[Round] | None = None) -> dict:
             'channel_id': game.channel_id}
 
 
-def finish_game(game: Game, host_member: DiscordMember) -> dict:
+def end_game(game: Game, host_member: DiscordMember) -> dict:
     """End a game, publishing the round still open and its final scores.
     The round in progress is revealed as the reveal command does, and its display
     values come back under ``reveal`` for the caller to publish; ``reveal`` is
@@ -159,7 +159,7 @@ def finish_game(game: Game, host_member: DiscordMember) -> dict:
     """
     require_host(game.guild, host_member)
     if game.state == Game.State.FINISHED:
-        raise ValueError(_("This quiz is already over."))
+        raise ValueError(_("This game is already over."))
     current = current_round(game)
     reveal = None
     if current is not None and not current.is_revealed:
@@ -219,20 +219,20 @@ def queue_questions(game: Game, host_member: DiscordMember, pks: Iterable[int],
 
 def unqueue_questions(game: Game, host_member: DiscordMember,
                       round_pks: Iterable[int]) -> int:
-    """Drop queued questions of a game and return how many were dropped."""
+    """Remove queued questions of a game and return how many were removed."""
     require_host(game.guild, host_member)
-    dropped, _counts = game.rounds.filter(
+    removed, _counts = game.rounds.filter(
         pk__in=[int(pk) for pk in round_pks], started_at__isnull=True).delete()
-    logger.info('Game %s: %s queued question(s) dropped', game.pk, dropped)
-    return dropped
+    logger.info('Game %s: %s queued question(s) removed', game.pk, removed)
+    return removed
 
 
 def clear_queue(game: Game, host_member: DiscordMember) -> int:
-    """Drop every queued question of a game and return how many were dropped."""
+    """Remove every queued question of a game, and return how many."""
     require_host(game.guild, host_member)
-    dropped, _counts = game.rounds.filter(started_at__isnull=True).delete()
-    logger.info('Game %s: queue cleared, %s dropped', game.pk, dropped)
-    return dropped
+    removed, _counts = game.rounds.filter(started_at__isnull=True).delete()
+    logger.info('Game %s: queue cleared, %s removed', game.pk, removed)
+    return removed
 
 
 def copy_questions(game: Game, host_member: DiscordMember, source: Game,

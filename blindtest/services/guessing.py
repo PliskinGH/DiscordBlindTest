@@ -53,11 +53,6 @@ def answer_form(display: dict) -> dict:
             'options': display['options'] if multiple_choice else []}
 
 
-def guess_form(round_: Round) -> dict:
-    """Return what the answer form of a round needs: its type and its options."""
-    return answer_form(round_display(round_))
-
-
 def _team_for(round_: Round, player: Player) -> Team | None:
     """Return the team of a player in the game of a round, if any."""
     return Team.objects.filter(game_id=round_.game_id, players=player).first()
@@ -77,7 +72,7 @@ def _answer_forms(answer: Answer | None) -> list[str]:
 def accepted_forms(question: Question) -> dict[str, list[str]]:
     """Return the forms each answer of a question is accepted in.
     Every guess of a round is matched against these, so they are read once and
-    dropped as soon as an answer or a variant of it is edited.
+    forgotten as soon as an answer or a variant of it is edited.
     """
     return remember(caching.answer_forms_key(question),
                     lambda: {'expected': _answer_forms(question.expected_answer),

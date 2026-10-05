@@ -1,4 +1,4 @@
-"""Slash commands and the operations behind the controls of a quiz."""
+"""Slash commands and the operations behind the controls of a game."""
 
 import logging
 from collections import OrderedDict
@@ -9,17 +9,20 @@ from discord.ext import commands, tasks
 
 from blindtest.models import Broadcast, Game, Question, QuizType, ScoringMode
 from discordcore.models import Guild
-from blindtest.services.broadcasts import (announce_game, broadcast_payload,
-                                           claim_broadcast, close_game,
-                                           close_round, mark_broadcast_failed,
-                                           mark_broadcast_sent, open_round,
-                                           pending_broadcasts)
+from blindtest.services.broadcasts import (broadcast_payload,
+                                           claim_broadcast,
+                                           mark_broadcast_failed,
+                                           mark_broadcast_sent,
+                                           pending_broadcasts,
+                                           post_game_end, post_publication,
+                                           post_round_open, post_round_reveal)
 from blindtest.services.games import (active_game, clear_queue,
                                       copy_questions_by_pk, create_game,
                                       game_choices, game_summary, panel_data,
                                       queue_questions, queued_choices,
                                       unqueue_questions)
-from blindtest.services.guessing import (guess_form, submit_guess,
+from blindtest.services.guessing import (answer_form, round_display,
+                                         submit_guess,
                                          submit_multiple_choice)
 from blindtest.services.guilds import (games_count, is_host, require_host,
                                        target_channel_id, target_ping_role_id)
@@ -42,16 +45,16 @@ BROADCAST_POLL_SECONDS = 1.0
 GameChannel = discord.abc.GuildChannel | discord.Thread
 
 # Said wherever a command needs the game of the server and finds none.
-NO_QUIZ_RUNNING = 'No quiz is running in this server.'
+NO_QUIZ_RUNNING = 'No game is running in this server.'
 
 # Descriptions both groups share; only setup, queue and next differ.
 PUBLISH_DESCRIPTION = 'Publish the game being prepared.'
 PANEL_DESCRIPTION = 'Reopen the private controls of the running game.'
 GUESS_DESCRIPTION = 'Submit your answer for the round in play.'
-END_DESCRIPTION = 'End the quiz of this server.'
+END_DESCRIPTION = 'End the game of this server.'
 REVEAL_DESCRIPTION = 'Reveal the current round.'
-UNQUEUE_DESCRIPTION = 'Drop a question queued for a round.'
-CLEAR_DESCRIPTION = 'Drop every queued question of the game.'
+UNQUEUE_DESCRIPTION = 'Remove a question queued for a round.'
+CLEAR_DESCRIPTION = 'Remove every queued question of the game.'
 COPY_DESCRIPTION = 'Queue the questions another game was played with.'
 
 # Options the two commands of a subcommand share. The ones that name a quiz
@@ -64,7 +67,7 @@ GUESS_OPTIONS = {'answer': 'Your answer, e.g. the music title.',
                  'secondary_answer': 'Artist for blind tests, or '
                                      'secondary required answer.'}
 QUEUE_OPTIONS = {'question': 'Question to play next.'}
-UNQUEUE_OPTIONS = {'question': 'Queued question to drop.'}
+UNQUEUE_OPTIONS = {'question': 'Queued question to remove.'}
 COPY_OPTIONS = {'source': 'Game to copy the questions from.'}
 
 
@@ -88,7 +91,7 @@ def require_pingable(interaction: discord.Interaction,
     """Raise ValueError when the bot cannot ping this role.
 
     A role above the bot's highest one makes Discord reject every message
-    naming it, which would swallow the announcement and every round.
+    naming it, which would swallow the publication and every round.
     """
     if role.guild.id != interaction.guild.id:
         raise ValueError("That role belongs to another server.")
@@ -128,7 +131,7 @@ def setup_text(data: dict, lead: str = '') -> str:
     """Return the lines naming the game being set up and its queue."""
     return '\n'.join(filter(None, [
         lead, summary_line(data),
-        '{} question(s) queued. Add, drop or copy questions, then '
+        '{} question(s) queued. Add, remove or copy questions, then '
         'publish.'.format(data['queued'])]))
 
 
@@ -145,14 +148,14 @@ def added_text(result: dict) -> str:
                                                       result['skipped'])
 
 
-def dropped_text(dropped: int) -> str:
-    """Return how a drop operation reports what it dropped."""
-    return '{} question(s) dropped.'.format(dropped)
+def removed_text(removed: int) -> str:
+    """Return how a removal reports what it removed."""
+    return '{} question(s) removed.'.format(removed)
 
 
-def unqueued_text(dropped: int) -> str:
-    """Return how dropping one queued question reports itself."""
-    return dropped_text(dropped) if dropped else 'That question is not queued.'
+def unqueued_text(removed: int) -> str:
+    """Return how removing one queued question reports itself."""
+    return removed_text(removed) if removed else 'That question is not queued.'
 
 
 def answer_form_title(interaction: discord.Interaction) -> str:
@@ -282,7 +285,7 @@ class GameCog(commands.Cog):
             logger.exception('Failed to process ping command')
             await interaction.followup.send('Failed to check database status.', ephemeral=True)
 
-    @quiz.command(name='setup', description='Set up a quiz in a channel.')
+    @quiz.command(name='setup', description='Set up a game in a channel.')
     @app_commands.describe(**SETUP_OPTIONS,
                            quiz_type='How the rounds are played.')
     @app_commands.choices(scoring=[
@@ -300,7 +303,7 @@ class GameCog(commands.Cog):
         await self.setup_game(interaction, scoring, name, quiz_type, channel, role)
 
     @blindtest.command(name='setup',
-                       description='Set up a blind test quiz in a channel.')
+                       description='Set up a blind test game in a channel.')
     @app_commands.describe(**SETUP_OPTIONS)
     @app_commands.choices(scoring=[
         app_commands.Choice(name=str(mode.label), value=mode.value)
@@ -360,7 +363,7 @@ class GameCog(commands.Cog):
         """Close the running game and publish the final scores."""
         await self.end_game(interaction)
 
-    @quiz.command(name='next', description='Open the next round of the quiz.')
+    @quiz.command(name='next', description='Open the next round of the game.')
     async def quiz_next_command(self, interaction: discord.Interaction) -> None:
         """Open the next round, starting a queued one or drawing a question."""
         await self.open_next_round(interaction)
@@ -407,7 +410,7 @@ class GameCog(commands.Cog):
     @app_commands.autocomplete(question=queued_autocomplete)
     async def quiz_unqueue_command(self, interaction: discord.Interaction,
                                    question: str) -> None:
-        """Drop a queued question of the game."""
+        """Remove a queued question of the game."""
         await self.unqueue_question(interaction, question)
 
     @blindtest.command(name='unqueue', description=UNQUEUE_DESCRIPTION)
@@ -415,7 +418,7 @@ class GameCog(commands.Cog):
     @app_commands.autocomplete(question=queued_autocomplete)
     async def blindtest_unqueue_command(self, interaction: discord.Interaction,
                                         question: str) -> None:
-        """Drop a queued question of the game."""
+        """Remove a queued question of the game."""
         await self.unqueue_question(interaction, question)
 
     @quiz.command(name='clear', description=CLEAR_DESCRIPTION)
@@ -485,16 +488,16 @@ class GameCog(commands.Cog):
             await self.send_setup_panel(interaction, data)
         except PermissionError:
             await interaction.followup.send(
-                'Only hosts of this server can set up a quiz.',
+                'Only hosts of this server can set up a game.',
                 ephemeral=True)
             return False
         except ValueError as error:
             await self.answer_refused_setup(interaction, guild, error)
             return False
         except Exception:
-            logger.exception('Failed to set up quiz')
+            logger.exception('Failed to set up the game')
             await interaction.followup.send(
-                'Could not set up the quiz (a game may already be running '
+                'Could not set up the game (one may already be running '
                 'in this server).', ephemeral=True)
             return False
         return True
@@ -560,9 +563,9 @@ class GameCog(commands.Cog):
             await interaction.followup.send(str(error), ephemeral=True)
             return False
         except Exception:
-            logger.exception('Failed to update the quiz')
+            logger.exception('Failed to update the game')
             await interaction.followup.send(
-                'Could not update the quiz.', ephemeral=True)
+                'Could not update the game.', ephemeral=True)
             return False
         if game.is_preparing:
             await self.respond(interaction, text_of(result),
@@ -579,11 +582,11 @@ class GameCog(commands.Cog):
             interaction, queue_questions, added_text,
             [int(value) for value in values])
 
-    async def drop_selection(self, interaction: discord.Interaction,
-                             values: 'list[str]') -> bool:
-        """Drop the queued questions the host picked."""
+    async def remove_selection(self, interaction: discord.Interaction,
+                               values: 'list[str]') -> bool:
+        """Remove the queued questions the host picked."""
         return await self.setup_flow(
-            interaction, unqueue_questions, dropped_text,
+            interaction, unqueue_questions, removed_text,
             [int(value) for value in values])
 
     async def copy_selection(self, interaction: discord.Interaction,
@@ -595,7 +598,7 @@ class GameCog(commands.Cog):
     async def clear(self, interaction: discord.Interaction) -> bool:
         """Empty the queue of the game."""
         return await self.setup_flow(interaction, clear_queue,
-                                     dropped_text)
+                                     removed_text)
 
     async def copy_questions(self, interaction: discord.Interaction,
                              source: str) -> bool:
@@ -608,7 +611,7 @@ class GameCog(commands.Cog):
         return await self.copy_selection(interaction, source)
 
     async def publish(self, interaction: discord.Interaction) -> bool:
-        """Publish the game being prepared and announce it."""
+        """Publish the game being prepared."""
         await self.defer(interaction, update_panel=True)
         try:
             guild = await guild_for(interaction)
@@ -618,22 +621,22 @@ class GameCog(commands.Cog):
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result, broadcast = await run_db(
-                announce_game, game, interaction.user, claim=True)
+                post_publication, game, interaction.user, claim=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
         except Exception:
-            logger.exception('Failed to publish the quiz')
+            logger.exception('Failed to publish the game')
             await interaction.followup.send(
-                'Could not publish the quiz.', ephemeral=True)
+                'Could not publish the game.', ephemeral=True)
             return False
-        # The game is live, so an announcement that fails must not deny it.
+        # The game is live, so a publication that fails must not deny it.
         try:
-            posted = await self.post_broadcast(broadcast, result,
-                                           fallback=interaction.channel)
+            posted = await self.post_broadcast(
+                broadcast, result, fallback=interaction.channel)
         except Exception:
             await interaction.followup.send(
-                'The announcement could not be posted.', ephemeral=True)
+                'The publication could not be posted.', ephemeral=True)
             return True
         text = posted_line('{} is published.'.format(result['game_name']),
                            posted)
@@ -657,7 +660,7 @@ class GameCog(commands.Cog):
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result, broadcast = await run_db(
-                open_round, game, interaction.user, claim=True)
+                post_round_open, game, interaction.user, claim=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -667,8 +670,8 @@ class GameCog(commands.Cog):
                 'Could not open the next round.', ephemeral=True)
             return False
         try:
-            posted = await self.post_broadcast(broadcast, result,
-                                           fallback=interaction.channel)
+            posted = await self.post_broadcast(
+                broadcast, result, fallback=interaction.channel)
         except Exception:
             await interaction.followup.send(
                 'The round is open, but its message could not be posted.',
@@ -695,7 +698,7 @@ class GameCog(commands.Cog):
                     'No round is running yet.', ephemeral=True)
                 return False
             result, broadcast = await run_db(
-                close_round, round_, interaction.user, claim=True)
+                post_round_reveal, round_, interaction.user, claim=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -705,8 +708,8 @@ class GameCog(commands.Cog):
                 'Could not reveal the round.', ephemeral=True)
             return False
         try:
-            posted = await self.post_broadcast(broadcast, result,
-                                           fallback=interaction.channel)
+            posted = await self.post_broadcast(
+                broadcast, result, fallback=interaction.channel)
         except Exception:
             await interaction.followup.send(
                 'Round {} revealed, but its answer could not be published.'.format(
@@ -751,11 +754,11 @@ class GameCog(commands.Cog):
         if channel is None:
             raise ValueError('Game {}: its channel is gone.'.format(
                 broadcast.game_id))
-        if broadcast.kind == Broadcast.Kind.ANNOUNCE:
+        if broadcast.kind == Broadcast.Kind.PUBLISH:
             return [await embeds.post(
                 channel, content=ping_text(payload),
-                embeds=[embeds.announce_embed(payload,
-                                              payload['host_mention'])])]
+                embeds=[embeds.publication_embed(
+                    payload, payload['host_mention'])])]
         if broadcast.kind == Broadcast.Kind.ROUND:
             message = await embeds.post(channel, content=ping_text(payload),
                                         embeds=[embeds.round_embed(payload)],
@@ -874,7 +877,7 @@ class GameCog(commands.Cog):
 
     async def unqueue_question(self, interaction: discord.Interaction,
                                question: str) -> bool:
-        """Drop a queued question of the game."""
+        """Remove a queued question of the game."""
         if not question.isdigit():
             await self.defer(interaction)
             await interaction.followup.send('That question no longer exists.',
@@ -895,11 +898,11 @@ class GameCog(commands.Cog):
                     interaction, NO_QUIZ_RUNNING,
                     closed=True)
                 return False
-            announced = not game.is_preparing
+            published = not game.is_preparing
             result, posts = await run_db(
-                close_game, game, interaction.user, claim=True)
-            if not announced:
-                # A game never announced closes without a public recap.
+                post_game_end, game, interaction.user, claim=True)
+            if not published:
+                # A game never published closes without a public recap.
                 await self.respond(
                     interaction,
                     f'{result["game_name"]} was closed before being published.',
@@ -907,11 +910,11 @@ class GameCog(commands.Cog):
                 return True
         except PermissionError:
             await self.respond(
-                interaction, 'Only hosts of this server can end the quiz.')
+                interaction, 'Only hosts of this server can end the game.')
             return False
         except Exception:
-            logger.exception('Failed to end the quiz')
-            await self.respond(interaction, 'Could not end the quiz.')
+            logger.exception('Failed to end the game')
+            await self.respond(interaction, 'Could not end the game.')
             return False
         # The game is over, so a post that fails must not deny it.
         await self.respond(interaction, f'{result["game_name"]} ended.',
@@ -993,8 +996,8 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     'No round is running yet.', ephemeral=True)
                 return
-            self.cache_form(message_id,
-                            await run_db(guess_form, round_))
+            display = await run_db(round_display, round_)
+            self.cache_form(message_id, await run_db(answer_form, display))
             await interaction.followup.send(
                 'Your answer form is ready.', ephemeral=True,
                 view=AnswerFormPanel(self, message_id))

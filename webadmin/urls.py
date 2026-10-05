@@ -27,10 +27,10 @@ urlpatterns = [
          library.AddQuestionView.as_view(), name='question_add'),
     path('g/<int:discord_guild_id>/library/questions/<int:question_pk>/',
          library.EditQuestionView.as_view(), name='question_edit'),
-    path('g/<int:discord_guild_id>/library/questions/<int:question_pk>/drop/',
-         library.RemoveQuestionView.as_view(), name='question_drop'),
-    path('g/<int:discord_guild_id>/library/answers/<int:answer_pk>/drop/',
-         library.RemoveAnswerView.as_view(), name='answer_drop'),
+    path('g/<int:discord_guild_id>/library/questions/<int:question_pk>/remove/',
+         library.RemoveQuestionView.as_view(), name='question_remove'),
+    path('g/<int:discord_guild_id>/library/answers/<int:answer_pk>/remove/',
+         library.RemoveAnswerView.as_view(), name='answer_remove'),
     # The control room: a host runs a game from the browser, and every member
     # of the server may answer the round in play.
     path('g/<int:discord_guild_id>/games/', games.GamesView.as_view(),
@@ -60,8 +60,8 @@ urlpatterns = [
          games.RevealRoundView.as_view(), name='game_reveal'),
     path('g/<int:discord_guild_id>/games/<int:game_pk>/end/',
          games.EndGameView.as_view(), name='game_end'),
-    path('g/<int:discord_guild_id>/games/<int:game_pk>/guess/',
-         games.GuessView.as_view(), name='game_guess'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/answer/',
+         games.AnswerView.as_view(), name='game_answer'),
     # The settings of a server are managed by its administrators.
     path('g/<int:discord_guild_id>/settings/', settings.SettingsView.as_view(),
          name='settings'),

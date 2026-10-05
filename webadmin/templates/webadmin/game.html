@@ -15,7 +15,7 @@
 <p class="text-body-secondary mb-4">
   {{ state.type_label }} — {{ state.state_label }} —
   {{ state.rounds }} round(s), {{ state.queued }} queued.
-  <a href="{{ guess_url }}">Answer from the browser</a>
+  <a href="{{ answer_url }}">Answer from the browser</a>
 </p>
 
 <div id="game-live"
@@ -37,7 +37,7 @@
         {% if state.can_queue %}
         {% crispy queue_form %}
         {% else %}
-        <p class="text-body-secondary">This quiz is over.</p>
+        <p class="text-body-secondary">This game is over.</p>
         {% endif %}
       </div>
     </div>
@@ -45,9 +45,9 @@
   <div class="accordion-item">
     <h2 class="accordion-header">
       <button class="accordion-button" type="button" data-bs-toggle="collapse"
-              data-bs-target="#drop-questions">Drop queued questions</button>
+              data-bs-target="#remove-questions">Remove queued questions</button>
     </h2>
-    <div id="drop-questions" class="accordion-collapse collapse"
+    <div id="remove-questions" class="accordion-collapse collapse"
          data-bs-parent="#game-forms">
       <div class="accordion-body">
         <form method="post"
@@ -69,7 +69,7 @@
           {% csrf_token %}
           <input type="hidden" name="action" value="clear">
           <button class="btn btn-outline-danger btn-sm" type="submit">
-            Drop the whole queue
+            Remove the whole queue
           </button>
         </form>
       </div>

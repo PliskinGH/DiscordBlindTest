@@ -17,19 +17,19 @@ from ..ui import option_label
 
 logger = logging.getLogger(__name__)
 
-# Value a host gives an option to drop the field it belongs to.
-DROP_VALUE = '-'
+# Value a host gives an option to clear the field it belongs to.
+CLEAR_VALUE = '-'
 # Hint the ``question edit`` options carry: an empty value keeps the field.
 KEEP_HINT = ' Leave empty to keep it.'
-DROP_HINT = f'{KEEP_HINT} {DROP_VALUE} to drop it.'
+CLEAR_HINT = f'{KEEP_HINT} {CLEAR_VALUE} to clear it.'
 
 
 def given_fields(**values: str) -> dict[str, str]:
     """Return the options a host filled in, an omitted one left out.
 
-    A ``-`` means the field is dropped, which the services read as an empty value.
+    A ``-`` clears the field, which the services read as an empty value.
     """
-    return {field: '' if value.strip() == DROP_VALUE else value.strip()
+    return {field: '' if value.strip() == CLEAR_VALUE else value.strip()
             for field, value in values.items() if value.strip()}
 
 
@@ -107,23 +107,23 @@ class LibraryCog(commands.Cog):
 
     @variant.command(name='remove', description='Stop accepting a variant.')
     @app_commands.describe(answer='Answer the variant belongs to.',
-                           text='Variant to drop.')
+                           text='Variant to remove.')
     async def variant_remove(self, interaction: discord.Interaction,
                              answer: str, text: str) -> None:
-        """Drop a variant registered for an answer."""
+        """Remove a variant registered for an answer."""
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
             await run_db(remove_variant, guild,
                          interaction.user, answer, text)
             await interaction.followup.send(
-                f'Variant dropped: **{text.strip()}**.', ephemeral=True)
+                f'Variant removed: **{text.strip()}**.', ephemeral=True)
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
         except Exception:
             logger.exception('Failed to remove a variant')
             await interaction.followup.send(
-                'Could not drop the variant.', ephemeral=True)
+                'Could not remove the variant.', ephemeral=True)
 
     @variant.command(name='list', description='Show the variants of an answer.')
     @app_commands.describe(answer='Answer to list the variants of.')
@@ -157,7 +157,7 @@ class LibraryCog(commands.Cog):
                            answer: str, artist: str = '', prompt: str = '',
                            choices: str = '', year: int | None = None,
                            album: str = '', media: str = '') -> None:
-        """Create a quiz question tied to this server."""
+        """Create a game question tied to this server."""
         await interaction.response.defer(ephemeral=True)
         try:
             guild = await guild_for(interaction)
@@ -188,13 +188,13 @@ class LibraryCog(commands.Cog):
     @app_commands.describe(
         question='Question to change.',
         answer='New answer, e.g. the song title.' + KEEP_HINT,
-        artist='New second answer, e.g. the artist.' + DROP_HINT,
-        prompt='New text shown to the players.' + DROP_HINT,
+        artist='New second answer, e.g. the artist.' + CLEAR_HINT,
+        prompt='New text shown to the players.' + CLEAR_HINT,
         choices=('New multiple choice options, separated by commas.'
-                 + DROP_HINT),
-        year='New year of release.' + DROP_HINT,
-        album='New album of the track.' + DROP_HINT,
-        media='New link to the track, e.g. a YouTube URL.' + DROP_HINT)
+                 + CLEAR_HINT),
+        year='New year of release.' + CLEAR_HINT,
+        album='New album of the track.' + CLEAR_HINT,
+        media='New link to the track, e.g. a YouTube URL.' + CLEAR_HINT)
     @app_commands.autocomplete(question=question_autocomplete)
     async def question_edit(self, interaction: discord.Interaction,
                             question: str, answer: str = '', artist: str = '',

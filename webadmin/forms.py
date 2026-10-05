@@ -265,7 +265,7 @@ class PingRoleForm(PickerForm):
 class SetupGameForm(BootstrapForm):
     """A game being set up: where it is played, how it is played and named."""
 
-    submit_label = _('Set up the quiz')
+    submit_label = _('Set up a game')
     auto_id_prefix = 'setup'
 
     channel_id = _option_field(
@@ -277,7 +277,7 @@ class SetupGameForm(BootstrapForm):
                     'which may be none.'))
     name = forms.CharField(
         label=_('Name'), max_length=100, required=False,
-        help_text=_('Left empty, the quiz is named after its type.'))
+        help_text=_('Left empty, the game is named after its type.'))
     quiz_type = forms.ChoiceField(
         label=_('Quiz type'), choices=QuizType.choices,
         initial=QuizType.BLIND_TEST,
@@ -354,9 +354,9 @@ class QueueForm(_QueueForm):
 
 
 class UnqueueForm(BootstrapForm):
-    """Queued rounds to drop from a game."""
+    """Queued rounds to remove from a game."""
 
-    submit_label = _('Drop the questions')
+    submit_label = _('Remove the questions')
     auto_id_prefix = 'unqueue'
 
     rounds = forms.MultipleChoiceField(
@@ -368,7 +368,7 @@ class UnqueueForm(BootstrapForm):
         self.fields['rounds'].choices = _options_of(options or [])
 
     def pks(self) -> list[int]:
-        """Return the queued rounds to drop, as the service wants their pks."""
+        """Return the queued rounds to remove, as the service wants."""
         return [int(pk) for pk in self.cleaned_data['rounds']]
 
 

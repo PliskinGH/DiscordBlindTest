@@ -120,7 +120,7 @@ def add_variant(guild: Guild, host_member: DiscordMember, answer_text: str,
 
 def remove_variant(guild: Guild, host_member: DiscordMember, answer_text: str,
                    variant_text: str) -> None:
-    """Drop a variant registered for a guild answer."""
+    """Remove a variant registered for a guild answer."""
     require_host(guild, host_member)
     answer = visible_answer(guild, answer_text)
     removed, _counts = answer.variants.filter(
@@ -212,19 +212,19 @@ def set_variants(guild: Guild, host_member: DiscordMember, answer_text: str,
 
 def remove_question(guild: Guild, host_member: DiscordMember,
                     pk: int | str) -> None:
-    """Drop a question of the guild's library that no game has played."""
+    """Remove a question of the guild's library that no game has played."""
     question = editable_question(guild, host_member, pk)
     if question.rounds.exists():
         raise ValueError(_("This question was played in a game and cannot be "
-                           "dropped."))
+                           "removed."))
     pk = question.pk
     question.delete()
-    logger.info('%s: question %s dropped', guild, pk)
+    logger.info('%s: question %s removed', guild, pk)
 
 
 def remove_answer(guild: Guild, host_member: DiscordMember,
                   pk: int | str) -> Answer:
-    """Drop an answer of the guild's library that no question uses."""
+    """Remove an answer of the guild's library that no question uses."""
     require_host(guild, host_member)
     number = str(pk).strip()
     answer = (guild.answers.filter(pk=int(number)).first()
@@ -236,9 +236,9 @@ def remove_answer(guild: Guild, host_member: DiscordMember,
                or answer.choice_for_questions.first())
     if used_by is not None:
         raise ValueError(_('This answer is used by the question "%s" and '
-                           'cannot be dropped.') % question_line(used_by))
+                           'cannot be removed.') % question_line(used_by))
     answer.delete()
-    logger.info('%s: answer %s dropped', guild, answer.text)
+    logger.info('%s: answer %s removed', guild, answer.text)
     return answer
 
 

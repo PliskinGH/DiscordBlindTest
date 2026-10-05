@@ -18,9 +18,9 @@ from ..constants import (BROADCAST_BATCH, BROADCAST_CLAIM_TIMEOUT,
                          BROADCAST_PANEL_SIZE, BROADCAST_RETRY_BASE_SECONDS,
                          BROADCAST_RETRY_MAX_SECONDS)
 from ..models import Broadcast, Game, Question, Round
-from .games import (announcement_payload, finish_game, publish_game,
+from .games import (publication_payload, end_game, publish_game,
                     recap_payload)
-from .rounds import reveal_payload, reveal_round, round_payload, start_round
+from .rounds import reveal_payload, reveal_round, round_payload, open_round
 
 
 def enqueue(game: Game, kind: str, *, round_: Round | None = None,
@@ -127,8 +127,8 @@ def broadcast_payload(broadcast: Broadcast) -> dict:
     Built uncached: this is the message the server reads, and a stale one would
     post the wrong scores.
     """
-    if broadcast.kind == Broadcast.Kind.ANNOUNCE:
-        return announcement_payload(broadcast.game)
+    if broadcast.kind == Broadcast.Kind.PUBLISH:
+        return publication_payload(broadcast.game)
     if broadcast.kind == Broadcast.Kind.RECAP:
         return recap_payload(broadcast.game)
     if broadcast.round_id is None:
@@ -178,27 +178,27 @@ def reset_broadcast(broadcast: Broadcast) -> Broadcast:
 
 
 @transaction.atomic
-def announce_game(game: Game, host_member: DiscordMember, *,
-                  claim: bool = False) -> tuple[dict, Broadcast]:
-    """Publish a game and record the announcement its client must post."""
+def post_publication(game: Game, host_member: DiscordMember, *,
+                     claim: bool = False) -> tuple[dict, Broadcast]:
+    """Publish a game and record the publication its client must post."""
     payload = publish_game(game, host_member)
-    return payload, enqueue(game, Broadcast.Kind.ANNOUNCE, claim=claim)
+    return payload, enqueue(game, Broadcast.Kind.PUBLISH, claim=claim)
 
 
 @transaction.atomic
-def open_round(game: Game, host_member: DiscordMember,
-               question: Question | None = None, quiz_type: str = '',
-               *, claim: bool = False) -> tuple[dict, Broadcast]:
+def post_round_open(game: Game, host_member: DiscordMember,
+                    question: Question | None = None, quiz_type: str = '',
+                    *, claim: bool = False) -> tuple[dict, Broadcast]:
     """Open the next round and record the message its client must post."""
-    payload = start_round(game, host_member, question, quiz_type)
+    payload = open_round(game, host_member, question, quiz_type)
     return payload, enqueue(game, Broadcast.Kind.ROUND,
                             round_=Round.objects.get(pk=payload['round_id']),
                             claim=claim)
 
 
 @transaction.atomic
-def close_round(round_: Round, host_member: DiscordMember, *,
-                claim: bool = False) -> tuple[dict, Broadcast]:
+def post_round_reveal(round_: Round, host_member: DiscordMember, *,
+                      claim: bool = False) -> tuple[dict, Broadcast]:
     """Reveal a round and record the posts its client must make."""
     payload = reveal_round(round_, host_member)
     return payload, enqueue(round_.game, Broadcast.Kind.REVEAL, round_=round_,
@@ -206,15 +206,16 @@ def close_round(round_: Round, host_member: DiscordMember, *,
 
 
 @transaction.atomic
-def close_game(game: Game, host_member: DiscordMember, *,
-               claim: bool = False) -> tuple[dict, list[tuple[Broadcast, dict]]]:
+def post_game_end(game: Game, host_member: DiscordMember, *,
+                  claim: bool = False
+                  ) -> tuple[dict, list[tuple[Broadcast, dict]]]:
     """End a game, recording the reveal of its open round and the recap.
     A game that ends with a round still open owes two posts: the answer of that
     round, and the final scores. Splitting them keeps every broadcast tied to one
     message, and each is returned with the payload its own message is built from,
     so a client posting them now and one posting them later render the same.
     """
-    payload = finish_game(game, host_member)
+    payload = end_game(game, host_member)
     reveal = payload['reveal']
     posts = []
     if reveal is not None:

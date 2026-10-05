@@ -50,17 +50,17 @@
 
 <h2 class="h5">Not used yet</h2>
 <p class="text-body-secondary">
-  A question no game has played, and an answer no question uses, can be dropped.
-  Dropping a question leaves its answers here.
+  A question no game has played, and an answer no question uses, can be removed.
+  Removing a question leaves its answers here.
 </p>
 {% if unused_questions %}
 <ul class="list-group mb-3">
   {% for question in unused_questions %}
   <li class="list-group-item d-flex align-items-center justify-content-between gap-2">
     <a href="{% url 'webadmin:question_edit' guild.discord_id question.pk %}">{{ question.label }}</a>
-    <form method="post" action="{% url 'webadmin:question_drop' guild.discord_id question.pk %}">
+    <form method="post" action="{% url 'webadmin:question_remove' guild.discord_id question.pk %}">
       {% csrf_token %}
-      <button class="btn btn-outline-danger btn-sm" type="submit">Drop the question</button>
+      <button class="btn btn-outline-danger btn-sm" type="submit">Remove the question</button>
     </form>
   </li>
   {% endfor %}
@@ -76,9 +76,9 @@
       <span class="badge text-bg-light border">{{ variant }}</span>
       {% endfor %}
     </span>
-    <form method="post" action="{% url 'webadmin:answer_drop' guild.discord_id answer.pk %}">
+    <form method="post" action="{% url 'webadmin:answer_remove' guild.discord_id answer.pk %}">
       {% csrf_token %}
-      <button class="btn btn-outline-danger btn-sm" type="submit">Drop the answer</button>
+      <button class="btn btn-outline-danger btn-sm" type="submit">Remove the answer</button>
     </form>
   </li>
   {% endfor %}

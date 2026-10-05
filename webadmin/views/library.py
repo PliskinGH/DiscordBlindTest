@@ -129,7 +129,7 @@ class EditQuestionView(HostRequired, View):
 
 
 class RemoveQuestionView(HostRequired, View):
-    """Drop a question of this server's library that no game has played."""
+    """Remove a question of this server's library that no game has played."""
 
     http_method_names = ['post', 'options']
 
@@ -142,12 +142,12 @@ class RemoveQuestionView(HostRequired, View):
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
             return _back(guild_id)
-        messages.success(request, 'Question dropped.')
+        messages.success(request, 'Question removed.')
         return _back(guild_id)
 
 
 class RemoveAnswerView(HostRequired, View):
-    """Drop an answer of this server's library that no question uses."""
+    """Remove an answer of this server's library that no question uses."""
 
     http_method_names = ['post', 'options']
 
@@ -160,5 +160,5 @@ class RemoveAnswerView(HostRequired, View):
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
             return _back(guild_id)
-        messages.success(request, f'Answer dropped: {answer.text}.')
+        messages.success(request, f'Answer removed: {answer.text}.')
         return _back(guild_id)

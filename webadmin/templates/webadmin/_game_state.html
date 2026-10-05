@@ -88,7 +88,7 @@
 {% if state.broadcasts %}
 <div class="card mb-3">
   <div class="card-body">
-    <h3 class="h6 mb-2">Recent posts</h3>
+    <h3 class="h6 mb-2">Recent broadcasts</h3>
     {% include 'webadmin/_broadcasts.html' with broadcasts=state.broadcasts next=state.retry_back %}
   </div>
 </div>
@@ -99,7 +99,7 @@
   {% if state.can_publish %}
   <form method="post" action="{% url 'webadmin:game_publish' guild.discord_id state.game_pk %}">
     {% csrf_token %}
-    <button class="btn btn-primary" type="submit">Announce the quiz</button>
+    <button class="btn btn-primary" type="submit">Publish the game</button>
   </form>
   {% endif %}
   {% if state.can_next %}
@@ -117,7 +117,7 @@
   {% if state.can_end %}
   <form method="post" action="{% url 'webadmin:game_end' guild.discord_id state.game_pk %}">
     {% csrf_token %}
-    <button class="btn btn-outline-danger" type="submit">End the quiz</button>
+    <button class="btn btn-outline-danger" type="submit">End the game</button>
   </form>
   {% endif %}
 </div>

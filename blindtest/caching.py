@@ -1,4 +1,4 @@
-"""Cache scopes, keys and limits of the quiz data.
+"""Cache scopes, keys and limits of the game data.
 
 A guild plays the questions of two libraries, its own and the global one, so the
 keys of its lists carry the version of both and an edit of either is seen at once.
@@ -57,13 +57,13 @@ def answer_forms_key(question: Question) -> str:
     """Return the key of the answer forms the questions of a guild accept.
 
     The forms depend on the accepted variants of the answers, and a variant
-    belongs to a guild, so one key per guild is what an edit has to drop.
+    belongs to a guild, so one key per guild is what an edit has to forget.
     """
     return scoped('bt:forms', guild_scope(question.guild_id))
 
 
 def forget_answer_forms(answer: Answer) -> None:
-    """Drop the cached forms of the questions that use an edited answer."""
+    """Forget the cached forms of the questions that use an edited answer."""
     forget(scoped('bt:forms', guild_scope(answer.guild_id)))
 
 

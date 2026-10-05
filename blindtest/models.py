@@ -77,7 +77,7 @@ class AnswerVariant(models.Model):
 
 
 class Question(models.Model):
-    """A quiz question, playable by any of the round types."""
+    """A game question, playable by any of the round types."""
 
     guild = models.ForeignKey(
         'discordcore.Guild', on_delete=models.CASCADE, null=True, blank=True,
@@ -141,7 +141,7 @@ def question_problem(question: Question, quiz_type: str) -> str | None:
 
 
 class Game(models.Model):
-    """One quiz session, hosted by a player in a Discord channel."""
+    """One game session, hosted by a player in a Discord channel."""
 
     class State(TextChoices):
         SETUP = 'SETUP', _('being prepared')
@@ -333,7 +333,7 @@ class Broadcast(models.Model):
     """
 
     class Kind(TextChoices):
-        ANNOUNCE = 'ANNOUNCE', _('announcement')
+        PUBLISH = 'PUBLISH', _('game published')
         ROUND = 'ROUND', _('round opened')
         REVEAL = 'REVEAL', _('round answer and scores')
         RECAP = 'RECAP', _('final scores')

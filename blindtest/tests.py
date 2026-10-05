@@ -1,4 +1,4 @@
-"""Tests for the quiz game rules."""
+"""Tests for the game rules."""
 
 from collections.abc import Iterable
 from datetime import timedelta
@@ -17,16 +17,16 @@ from discordcore.mentions import role_mention, user_mention
 from discordcore.models import Guild, Player
 
 from . import caching, matching
-from .services.broadcasts import (announce_game, broadcast_payload,
-                                  claim_broadcast, close_game,
+from .services.broadcasts import (post_publication, broadcast_payload,
+                                  claim_broadcast, post_game_end,
                                   enqueue, mark_broadcast_failed,
-                                  mark_broadcast_sent, open_round,
+                                  mark_broadcast_sent, post_round_open,
                                   pending_broadcasts)
 from .services.games import (clear_queue, copy_questions_by_pk,
-                             create_game, finish_game, game_choices,
+                             create_game, end_game, game_choices,
                              panel_data, publish_game,
                              queue_questions, queued_choices)
-from .services.guessing import (add_team, assign_player, guess_form,
+from .services.guessing import (add_team, answer_form, assign_player,
                                 round_display, submit_guess, team_of)
 from .services.guilds import (add_host, clear_default_channel,
                               clear_default_ping_role,
@@ -44,7 +44,7 @@ from .services.library import (add_answer, add_question, add_variant,
                                unused_questions, variants_of)
 from .services.rounds import (create_round, current_round,
                               pick_question, queued_count,
-                              reveal_round, start_round)
+                              reveal_round, open_round)
 from .services.scores import game_scores, game_team_scores
 
 from .constants import BROADCAST_CLAIM_TIMEOUT, DEFAULT_BLIND_TEST_PROMPT
@@ -153,14 +153,14 @@ class GameTests(GameTestCase):
     def test_only_hosts_end_a_game(self):
         game = self.create_game()
         with self.assertRaises(PermissionError):
-            finish_game(game, self.player)
+            end_game(game, self.player)
 
     def test_finishing_reveals_the_round_in_progress(self):
         game = self.create_game()
         round_ = Round.objects.get(
-            pk=start_round(game, self.host, self.question)['round_id'])
+            pk=open_round(game, self.host, self.question)['round_id'])
         submit_guess(round_, self.player_row, 'Song', 'Band')
-        result = finish_game(game, self.host)
+        result = end_game(game, self.host)
         round_.refresh_from_db()
         game.refresh_from_db()
         self.assertTrue(round_.is_revealed)
@@ -177,28 +177,28 @@ class GameTests(GameTestCase):
 
     def test_finishing_a_game_without_an_open_round_reveals_nothing(self):
         game = self.create_game()
-        result = finish_game(game, self.host)
+        result = end_game(game, self.host)
         self.assertIsNone(result['reveal'])
         self.assertEqual(result['rounds'], 0)
 
     def test_finishing_a_revealed_round_publishes_it_again(self):
         game = self.create_game()
         round_ = Round.objects.get(
-            pk=start_round(game, self.host, self.question)['round_id'])
+            pk=open_round(game, self.host, self.question)['round_id'])
         reveal_round(round_, self.host)
-        result = finish_game(game, self.host)
+        result = end_game(game, self.host)
         self.assertIsNone(result['reveal'])
         self.assertEqual(result['rounds'], 1)
 
     def test_finishing_twice_is_refused(self):
         game = self.create_game()
-        finish_game(game, self.host)
+        end_game(game, self.host)
         with self.assertRaises(ValueError):
-            finish_game(game, self.host)
+            end_game(game, self.host)
 
     def test_a_new_game_can_be_created_after_the_previous_one_ended(self):
         game = self.create_game()
-        finish_game(game, self.host)
+        end_game(game, self.host)
         game = self.create_game()
         self.assertEqual(game.state, Game.State.RUNNING)
 
@@ -336,20 +336,20 @@ class DefaultPingRoleTests(GameTestCase):
         game = create_game(self.guild, 100, self.host)
         self.assertIsNone(game.ping_role_id)
 
-    def test_the_role_travels_with_the_announcement_and_the_rounds(self):
+    def test_the_role_travels_with_the_publication_and_the_rounds(self):
         game = create_game(self.guild, 100, self.host,
                                     state=Game.State.SETUP, ping_role_id=99)
-        announced = publish_game(game, self.host)
-        self.assertEqual(announced['ping_role_id'], 99)
-        opened = start_round(game, self.host, self.question)
+        published = publish_game(game, self.host)
+        self.assertEqual(published['ping_role_id'], 99)
+        opened = open_round(game, self.host, self.question)
         self.assertEqual(opened['ping_role_id'], 99)
 
-    def test_the_announcement_of_a_silent_game_names_no_role(self):
+    def test_the_publication_of_a_silent_game_names_no_role(self):
         game = create_game(self.guild, 100, self.host,
                                     state=Game.State.SETUP)
-        announced = publish_game(game, self.host)
-        opened = start_round(game, self.host, self.question)
-        self.assertIsNone(announced['ping_role_id'])
+        published = publish_game(game, self.host)
+        opened = open_round(game, self.host, self.question)
+        self.assertIsNone(published['ping_role_id'])
         self.assertIsNone(opened['ping_role_id'])
 
 
@@ -358,36 +358,36 @@ class RoundTests(GameTestCase):
         super().setUp()
         self.game = self.create_game()
         self.round = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
 
     def test_rounds_are_numbered_in_order(self):
         self.assertEqual(self.round.index, 1)
         reveal_round(self.round, self.host)
-        self.assertEqual(start_round(self.game, self.host)['index'], 2)
+        self.assertEqual(open_round(self.game, self.host)['index'], 2)
 
     def test_only_hosts_open_or_reveal_rounds(self):
         with self.assertRaises(PermissionError):
-            start_round(self.game, self.player)
+            open_round(self.game, self.player)
         with self.assertRaises(PermissionError):
             reveal_round(self.round, self.player)
 
     def test_a_round_must_be_revealed_before_the_next_one(self):
         with self.assertRaises(ValueError):
-            start_round(self.game, self.host)
+            open_round(self.game, self.host)
 
     def test_a_played_question_is_not_drawn_again(self):
         reveal_round(self.round, self.host)
         started = Round.objects.get(
-            pk=start_round(self.game, self.host)['round_id'])
+            pk=open_round(self.game, self.host)['round_id'])
         self.assertEqual(started.question, self.other_question)
 
     def test_running_out_of_questions_is_refused(self):
         reveal_round(self.round, self.host)
         second = Round.objects.get(
-            pk=start_round(self.game, self.host)['round_id'])
+            pk=open_round(self.game, self.host)['round_id'])
         reveal_round(second, self.host)
         with self.assertRaises(ValueError):
-            start_round(self.game, self.host)
+            open_round(self.game, self.host)
 
     def test_revealing_twice_is_refused(self):
         reveal_round(self.round, self.host)
@@ -409,7 +409,7 @@ class RoundTests(GameTestCase):
     def test_the_current_round_is_the_started_one(self):
         reveal_round(self.round, self.host)
         started = Round.objects.get(
-            pk=start_round(self.game, self.host)['round_id'])
+            pk=open_round(self.game, self.host)['round_id'])
         self.assertEqual(current_round(self.game).pk, started.pk)
 
     def test_a_queued_round_is_not_started_on_creation(self):
@@ -422,7 +422,7 @@ class RoundTests(GameTestCase):
         create_round(self.game, self.host, self.other_question)
         reveal_round(self.round, self.host)
         started = Round.objects.get(
-            pk=start_round(self.game, self.host)['round_id'])
+            pk=open_round(self.game, self.host)['round_id'])
         self.assertEqual(started.question, self.other_question)
         self.assertTrue(started.is_started)
 
@@ -435,11 +435,11 @@ class RoundTests(GameTestCase):
             pk=create_round(self.game, self.host, third_question)['round_id'])
         reveal_round(self.round, self.host)
         started = Round.objects.get(
-            pk=start_round(self.game, self.host)['round_id'])
+            pk=open_round(self.game, self.host)['round_id'])
         self.assertEqual((started.pk, started.index), (second.pk, 2))
         reveal_round(started, self.host)
         started = Round.objects.get(
-            pk=start_round(self.game, self.host)['round_id'])
+            pk=open_round(self.game, self.host)['round_id'])
         self.assertEqual((started.pk, started.index), (third.pk, 3))
 
     def test_only_hosts_queue_rounds(self):
@@ -448,7 +448,7 @@ class RoundTests(GameTestCase):
 
     def test_rounds_cannot_be_queued_once_the_game_is_over(self):
         reveal_round(self.round, self.host)
-        finish_game(self.game, self.host)
+        end_game(self.game, self.host)
         with self.assertRaises(ValueError):
             create_round(self.game, self.host, self.other_question)
 
@@ -457,7 +457,7 @@ class GuessTests(GameTestCase):
         super().setUp()
         self.game = self.create_game()
         self.round = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
 
     def test_a_right_guess_matches_the_title_and_the_artist(self):
         guess = submit_guess(self.round, self.player_row, 'Song', 'Band')
@@ -523,7 +523,7 @@ class ScoringTests(GameTestCase):
         super().setUp()
         self.game = self.create_game()
         self.round = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
         self.second = Player.objects.from_discord(FakeMember(44))
 
     def set_game_scoring_mode(self, mode: str) -> None:
@@ -581,7 +581,7 @@ class TeamTests(GameTestCase):
         super().setUp()
         self.game = self.create_game()
         self.round = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
         self.teammate = Player.objects.from_discord(FakeMember(44))
 
     def test_add_team_creates_it_with_its_players(self):
@@ -698,7 +698,7 @@ class HostManagementTests(GameTestCase):
 
 
 class LibraryRemovalTests(GameTestCase):
-    """Dropping what no game played and no question uses."""
+    """Removing what no game played and no question uses."""
 
     def setUp(self):
         super().setUp()
@@ -708,24 +708,24 @@ class LibraryRemovalTests(GameTestCase):
         add_host(self.other_guild, user_mention(42),
                           FakeMember(42, manage_guild=True))
 
-    def test_a_host_drops_an_unplayed_question(self):
+    def test_a_host_removes_an_unplayed_question(self):
         remove_question(self.guild, self.host, self.question.pk)
         self.assertFalse(Question.objects.filter(pk=self.question.pk).exists())
 
     def test_a_played_question_is_kept(self):
         game = self.create_game()
-        start_round(game, self.host, self.question)
+        open_round(game, self.host, self.question)
         with self.assertRaises(ValueError) as refused:
             remove_question(self.guild, self.host, self.question.pk)
         self.assertIn('played in a game', str(refused.exception))
         self.assertTrue(Question.objects.filter(pk=self.question.pk).exists())
 
-    def test_dropping_a_question_of_another_guild_is_refused(self):
+    def test_removing_a_question_of_another_guild_is_refused(self):
         with self.assertRaises(ValueError):
             remove_question(self.other_guild, self.host,
                                      self.question.pk)
 
-    def test_a_host_drops_an_unused_answer(self):
+    def test_a_host_removes_an_unused_answer(self):
         spare = self.guild.answers.create(text='Spare')
         remove_answer(self.guild, self.host, spare.pk)
         self.assertFalse(self.guild.answers.filter(pk=spare.pk).exists())
@@ -749,12 +749,12 @@ class LibraryRemovalTests(GameTestCase):
             remove_answer(self.guild, self.host, self.own_answer.pk)
         self.assertTrue(Question.objects.filter(pk=self.question.pk).exists())
 
-    def test_dropping_an_answer_of_another_guild_is_refused(self):
+    def test_removing_an_answer_of_another_guild_is_refused(self):
         with self.assertRaises(ValueError):
             remove_answer(self.other_guild, self.host,
                                    self.own_answer.pk)
 
-    def test_a_stranger_drops_nothing(self):
+    def test_a_stranger_removes_nothing(self):
         with self.assertRaises(PermissionError):
             remove_question(self.guild, self.player, self.question.pk)
         with self.assertRaises(PermissionError):
@@ -768,11 +768,11 @@ class LibraryRemovalTests(GameTestCase):
 
     def test_a_played_question_leaves_the_unused_list(self):
         game = self.create_game()
-        start_round(game, self.host, self.question)
+        open_round(game, self.host, self.question)
         self.assertEqual(unused_questions(self.guild), [])
         self.assertEqual(unused_answers(self.guild), [])
 
-    def test_a_dropped_question_leaves_its_answer_behind(self):
+    def test_a_removed_question_leaves_its_answer_behind(self):
         remove_question(self.guild, self.host, self.question.pk)
         self.assertEqual(unused_questions(self.guild), [])
         self.assertEqual(
@@ -791,7 +791,7 @@ class LibraryRemovalTests(GameTestCase):
             [variant.text for variant in self.own_answer.variants.all()],
             ['Tune'])
 
-    def test_the_host_drops_every_variant_of_an_answer(self):
+    def test_the_host_removes_every_variant_of_an_answer(self):
         set_variants(self.guild, self.host, 'Own', ['Tune'])
         set_variants(self.guild, self.host, 'Own', [])
         self.assertEqual(self.own_answer.variants.count(), 0)
@@ -807,7 +807,7 @@ class LibraryTests(GameTestCase):
         self.other_question.delete()
         self.game = self.create_game()
         self.round = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
 
     def test_add_answer_creates_it_for_the_guild(self):
         answer = add_answer(self.guild, self.host, ' Wonderwall ')
@@ -962,7 +962,7 @@ class LibraryTests(GameTestCase):
             create_round(self.game, self.host, foreign)
         reveal_round(self.round, self.host)
         with self.assertRaises(ValueError):
-            start_round(self.game, self.host, foreign)
+            open_round(self.game, self.host, foreign)
 
 
 class QuestionEditTests(GameTestCase):
@@ -1117,7 +1117,7 @@ class QuestionEditTests(GameTestCase):
                                 for choice in question.choices.all()),
                          ['Righter', 'Wrong'])
 
-    def test_the_choices_are_replaced_and_dropped(self):
+    def test_the_choices_are_replaced_and_removed(self):
         question = Question.objects.get(
             pk=add_question(self.guild, self.host, 'Right',
                                      prompt='Pick one',
@@ -1247,13 +1247,13 @@ class QuizTypeTests(GameTestCase):
 
     def test_a_round_inherits_the_game_type(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
         self.assertEqual(round_.type, '')
         self.assertEqual(round_.effective_type, QuizType.BLIND_TEST)
 
     def test_a_round_can_override_the_game_type(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host,
+            pk=open_round(self.game, self.host,
                                     self._choice_question(),
                                     QuizType.MULTIPLE_CHOICE)['round_id'])
         self.assertEqual(round_.type, QuizType.MULTIPLE_CHOICE)
@@ -1261,7 +1261,7 @@ class QuizTypeTests(GameTestCase):
 
     def test_an_open_round_needs_a_prompted_question(self):
         with self.assertRaises(ValueError):
-            start_round(self.game, self.host, self.question, QuizType.OPEN)
+            open_round(self.game, self.host, self.question, QuizType.OPEN)
 
     def test_a_multiple_choice_round_needs_two_choices(self):
         expected = Answer.objects.create(text='Alone')
@@ -1282,43 +1282,43 @@ class QuizTypeTests(GameTestCase):
 
     def test_a_blind_test_round_plays_a_question_without_a_prompt(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
         self.assertEqual(round_display(round_)['prompt'],
                          DEFAULT_BLIND_TEST_PROMPT)
 
     def test_an_open_round_shows_the_prompt_of_its_question(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host,
+            pk=open_round(self.game, self.host,
                                     self._prompted_question(), QuizType.OPEN)['round_id'])
         self.assertEqual(round_display(round_)['prompt'], 'Which album?')
 
     def test_a_draw_skips_questions_the_round_type_cannot_play(self):
         with self.assertRaises(ValueError):
-            start_round(self.game, self.host, quiz_type=QuizType.OPEN)
+            open_round(self.game, self.host, quiz_type=QuizType.OPEN)
         prompted = self._prompted_question()
         started = Round.objects.get(
-            pk=start_round(self.game, self.host,
+            pk=open_round(self.game, self.host,
                                     quiz_type=QuizType.OPEN)['round_id'])
         self.assertEqual(started.question, prompted)
 
     def test_a_draw_finds_a_multiple_choice_question_with_choices(self):
         question = self._choice_question()
         started = Round.objects.get(
-            pk=start_round(self.game, self.host,
+            pk=open_round(self.game, self.host,
                                     quiz_type=QuizType.MULTIPLE_CHOICE)['round_id'])
         self.assertEqual(started.question, question)
 
     def test_the_form_of_a_text_round_offers_no_option(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
-        self.assertEqual(guess_form(round_)['options'], [])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
+        self.assertEqual(answer_form(round_display(round_))['options'], [])
 
     def test_the_form_of_a_multiple_choice_round_offers_its_choices(self):
         round_ = Round.objects.get(
             pk=create_round(self.game, self.host,
                                      self._choice_question(),
                                      QuizType.MULTIPLE_CHOICE)['round_id'])
-        form = guess_form(round_)
+        form = answer_form(round_display(round_))
         self.assertEqual(form['type'], QuizType.MULTIPLE_CHOICE)
         self.assertEqual([option['label'] for option in form['options']],
                          ['Right', 'Wrong'])
@@ -1328,7 +1328,7 @@ class QuizTypeTests(GameTestCase):
         later = Question.objects.create(
             expected_answer=Answer.objects.create(text='Later'))
         create_round(self.game, self.host, later)
-        result = start_round(self.game, self.host, self.question)
+        result = open_round(self.game, self.host, self.question)
         self.assertEqual(result['queued'], 1)
         self.assertEqual(result['game_name'], self.game.display_name)
         self.assertEqual(result['type_label'], 'Blind test')
@@ -1337,13 +1337,13 @@ class QuizTypeTests(GameTestCase):
         self.other_question.media_url = 'https://youtu.be/1'
         self.other_question.save(update_fields=['media_url'])
         queued = create_round(self.game, self.host, self.other_question)
-        started = start_round(self.game, self.host, self.question)
+        started = open_round(self.game, self.host, self.question)
         self.assertEqual(queued['media_url'], 'https://youtu.be/1')
         self.assertEqual(started['media_url'], '')
 
     def test_the_reveal_counts_the_answers_and_the_right_ones(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
         submit_guess(round_, self.player_row, 'Song', 'Band')
         result = reveal_round(round_, self.host)
         self.assertEqual(result['answer_text'], 'Song (Band)')
@@ -1352,10 +1352,10 @@ class QuizTypeTests(GameTestCase):
 
     def test_the_recap_summarises_the_game(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
         submit_guess(round_, self.player_row, 'Song', 'Band')
         reveal_round(round_, self.host)
-        recap = finish_game(self.game, self.host)
+        recap = end_game(self.game, self.host)
         self.assertEqual(recap['rounds'], 1)
         self.assertEqual(recap['answers'], 1)
         self.assertEqual(recap['game_name'], self.game.display_name)
@@ -1363,18 +1363,18 @@ class QuizTypeTests(GameTestCase):
 
     def test_a_queued_question_is_not_a_round_played(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
         submit_guess(round_, self.player_row, 'Song', 'Band')
         reveal_round(round_, self.host)
         create_round(self.game, self.host, self.other_question)
-        recap = finish_game(self.game, self.host)
+        recap = end_game(self.game, self.host)
         self.assertEqual(recap['rounds'], 1)
         self.assertEqual(recap['answers'], 1)
         self.assertEqual([row['points'] for row in recap['scores']], [2])
 
     def test_a_round_edited_in_the_admin_is_validated(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host, self.question)['round_id'])
+            pk=open_round(self.game, self.host, self.question)['round_id'])
         round_.type = QuizType.MULTIPLE_CHOICE
         with self.assertRaises(ValidationError):
             round_.full_clean()
@@ -1396,7 +1396,7 @@ class QuizTypeTests(GameTestCase):
 
     def test_the_host_text_of_a_round_carries_the_answer(self):
         round_ = Round.objects.get(
-            pk=start_round(self.game, self.host,
+            pk=open_round(self.game, self.host,
                                     self._prompted_question(), QuizType.OPEN)['round_id'])
         display = round_display(round_)
         self.assertEqual(display['question_text'], 'Which album?')
@@ -1433,16 +1433,16 @@ class SetupStateTests(GameTestCase):
     def test_a_round_cannot_be_opened_before_publishing(self):
         game = self.game_in_setup()
         with self.assertRaises(ValueError):
-            start_round(game, self.host, self.question)
+            open_round(game, self.host, self.question)
 
     def test_publishing_starts_the_game(self):
         game = self.game_in_setup(name='Fiesta')
-        announced = publish_game(game, self.host)
+        published = publish_game(game, self.host)
         game.refresh_from_db()
         self.assertTrue(game.is_running)
-        self.assertEqual(announced['game_name'], 'Fiesta')
-        self.assertEqual(announced['queued'], 0)
-        self.assertEqual(announced['type_label'], 'Blind test')
+        self.assertEqual(published['game_name'], 'Fiesta')
+        self.assertEqual(published['queued'], 0)
+        self.assertEqual(published['type_label'], 'Blind test')
 
     def test_publishing_twice_is_refused(self):
         game = self.game_in_setup()
@@ -1457,14 +1457,14 @@ class SetupStateTests(GameTestCase):
 
     def test_closing_an_unpublished_game_finishes_it(self):
         game = self.game_in_setup()
-        finish_game(game, self.host)
+        end_game(game, self.host)
         game.refresh_from_db()
         self.assertEqual(game.state, Game.State.FINISHED)
         self.assertFalse(game.is_preparing)
 
 
 class QueueTests(GameTestCase):
-    """The setup panel queues, drops and copies questions."""
+    """The setup panel queues, removes and copies questions."""
 
     def test_queueing_questions_counts_what_was_added(self):
         game = self.create_game()
@@ -1478,7 +1478,7 @@ class QueueTests(GameTestCase):
         with self.assertRaises(PermissionError):
             queue_questions(game, self.player, [self.question.pk])
 
-    def test_clearing_the_queue_drops_every_queued_question(self):
+    def test_clearing_the_queue_removes_every_queued_question(self):
         game = self.create_game()
         queue_questions(game, self.host, [self.question.pk])
         self.assertEqual(clear_queue(game, self.host), 1)
@@ -1486,8 +1486,8 @@ class QueueTests(GameTestCase):
 
     def test_copying_a_game_queues_its_questions(self):
         source = self.create_game()
-        start_round(source, self.host, self.question)
-        finish_game(source, self.host)
+        open_round(source, self.host, self.question)
+        end_game(source, self.host)
         game = self.create_game()
         result = copy_questions_by_pk(game, self.host, source.pk)
         self.assertEqual((result['added'], result['skipped']), (1, 0))
@@ -1500,8 +1500,8 @@ class QueueTests(GameTestCase):
 
     def test_copying_a_game_of_another_server_is_refused(self):
         foreign = create_game(self.other_guild, 100, self.admin)
-        start_round(foreign, self.admin, self.question)
-        finish_game(foreign, self.admin)
+        open_round(foreign, self.admin, self.question)
+        end_game(foreign, self.admin)
         game = self.create_game()
         with self.assertRaises(ValueError):
             copy_questions_by_pk(game, self.host, foreign.pk)
@@ -1555,7 +1555,7 @@ class VariantTests(GameTestCase):
 
 
 class CacheTests(GameTestCase):
-    """A derived list is read once, and a write drops what it changes."""
+    """A derived list is read once, and a write forgets what it changes."""
 
     def test_the_hosts_of_a_guild_are_read_once(self):
         hosts_of(self.guild)
@@ -1620,7 +1620,7 @@ class CacheTests(GameTestCase):
         game = self.create_game()
         played = question_choices(game)[0]['pk']
         with self.captureOnCommitCallbacks(execute=True):
-            start_round(game, self.host,
+            open_round(game, self.host,
                                  question_by_pk(played))
         left = [choice['pk'] for choice in question_choices(game)]
         self.assertNotIn(played, left)
@@ -1670,7 +1670,7 @@ class ScoreboardQueryTests(GameTestCase):
         game = self.create_game()
         for _count in range(rounds):
             round_ = Round.objects.get(
-                pk=start_round(game, self.host, self.question)['round_id'])
+                pk=open_round(game, self.host, self.question)['round_id'])
             submit_guess(round_, self.player_row, 'Song')
             reveal_round(round_, self.host)
         return game
@@ -1680,7 +1680,7 @@ class ScoreboardQueryTests(GameTestCase):
             game = self._play(rounds)
             with CaptureQueriesContext(connection) as captured:
                 game_scores(game)
-            finish_game(game, self.host)
+            end_game(game, self.host)
             return len(captured)
         self.assertEqual(queries(1), queries(3))
 
@@ -1688,7 +1688,7 @@ class ScoreboardQueryTests(GameTestCase):
         def queries(rounds: int) -> int:
             game = self._play(rounds)
             with CaptureQueriesContext(connection) as captured:
-                finish_game(game, self.host)
+                end_game(game, self.host)
             return len(captured)
         self.assertEqual(queries(1), queries(3))
 
@@ -1708,36 +1708,36 @@ class BroadcastTests(GameTestCase):
     def played_game(self) -> Game:
         """Return a game with a round open in it."""
         game = self.create_game()
-        start_round(game, self.host)
+        open_round(game, self.host)
         return game
 
     def test_opening_a_round_records_the_post_it_owes(self):
-        payload, broadcast = open_round(self.running_game(), self.host)
+        payload, broadcast = post_round_open(self.running_game(), self.host)
         self.assertEqual(broadcast.kind, Broadcast.Kind.ROUND)
         self.assertEqual(broadcast.status, Broadcast.Status.PENDING)
         self.assertEqual(broadcast.round_id, payload['round_id'])
         self.assertIsNone(broadcast.sent_at)
 
-    def test_publishing_records_the_announcement_it_owes(self):
-        _payload, broadcast = announce_game(self.prepared_game(),
+    def test_publishing_records_the_publication_it_owes(self):
+        _payload, broadcast = post_publication(self.prepared_game(),
                                                      self.host)
-        self.assertEqual(broadcast.kind, Broadcast.Kind.ANNOUNCE)
+        self.assertEqual(broadcast.kind, Broadcast.Kind.PUBLISH)
         self.assertIsNone(broadcast.round_id)
 
     def test_a_refused_transition_records_no_post(self):
         with self.assertRaises(ValueError):
-            announce_game(self.create_game(), self.host)
+            post_publication(self.create_game(), self.host)
         self.assertEqual(Broadcast.objects.count(), 0)
 
     def test_a_claimed_post_is_left_to_the_client_that_owns_it(self):
-        _payload, broadcast = open_round(
+        _payload, broadcast = post_round_open(
             self.running_game(), self.host, claim=True)
         self.assertEqual(broadcast.status, Broadcast.Status.CLAIMED)
         self.assertFalse(claim_broadcast(broadcast.pk))
         self.assertEqual(pending_broadcasts(), [])
 
     def test_only_one_client_takes_a_post(self):
-        _payload, broadcast = open_round(self.running_game(),
+        _payload, broadcast = post_round_open(self.running_game(),
                                                   self.host)
         self.assertTrue(claim_broadcast(broadcast.pk))
         self.assertFalse(claim_broadcast(broadcast.pk))
@@ -1749,7 +1749,7 @@ class BroadcastTests(GameTestCase):
             - timedelta(seconds=BROADCAST_CLAIM_TIMEOUT + 1))
 
     def test_a_post_held_for_too_long_is_taken_over(self):
-        _payload, broadcast = open_round(
+        _payload, broadcast = post_round_open(
             self.running_game(), self.host, claim=True)
         self.assertEqual(pending_broadcasts(), [])
         self._expire(broadcast)
@@ -1759,27 +1759,27 @@ class BroadcastTests(GameTestCase):
 
     def test_the_posts_come_oldest_first(self):
         game = self.running_game()
-        first = enqueue(game, Broadcast.Kind.ANNOUNCE)
+        first = enqueue(game, Broadcast.Kind.PUBLISH)
         second = enqueue(game, Broadcast.Kind.RECAP)
         self.assertEqual([b.pk for b in pending_broadcasts()],
                          [first.pk, second.pk])
 
     def test_a_finished_game_owes_the_answer_and_the_scores(self):
-        _payload, posts = close_game(self.played_game(), self.host)
+        _payload, posts = post_game_end(self.played_game(), self.host)
         self.assertEqual([broadcast.kind for broadcast, _payload in posts],
                          [Broadcast.Kind.REVEAL, Broadcast.Kind.RECAP])
 
     def test_a_game_ended_with_no_open_round_owes_only_the_scores(self):
-        _payload, posts = close_game(self.create_game(), self.host)
+        _payload, posts = post_game_end(self.create_game(), self.host)
         self.assertEqual([broadcast.kind for broadcast, _payload in posts],
                          [Broadcast.Kind.RECAP])
 
     def test_a_post_read_later_shows_what_it_showed(self):
-        payload, broadcast = open_round(self.running_game(), self.host)
+        payload, broadcast = post_round_open(self.running_game(), self.host)
         self.assertEqual(broadcast_payload(broadcast), payload)
 
     def test_the_answer_and_the_scores_read_the_same_later(self):
-        payload, posts = close_game(self.played_game(), self.host)
+        payload, posts = post_game_end(self.played_game(), self.host)
         reveal, recap = posts
         self.assertEqual(broadcast_payload(reveal[0]), payload['reveal'])
         self.assertEqual(
@@ -1787,7 +1787,7 @@ class BroadcastTests(GameTestCase):
             {key: value for key, value in payload.items() if key != 'reveal'})
 
     def test_a_post_keeps_the_messages_it_produced(self):
-        _payload, broadcast = open_round(self.running_game(),
+        _payload, broadcast = post_round_open(self.running_game(),
                                                   self.host)
         mark_broadcast_sent(broadcast, [11, 12])
         self.assertEqual(broadcast.status, Broadcast.Status.SENT)
@@ -1796,7 +1796,7 @@ class BroadcastTests(GameTestCase):
         self.assertEqual(pending_broadcasts(), [])
 
     def test_a_post_that_could_not_be_made_keeps_its_reason(self):
-        _payload, broadcast = open_round(self.running_game(),
+        _payload, broadcast = post_round_open(self.running_game(),
                                                   self.host)
         mark_broadcast_failed(broadcast, 'its channel is gone')
         self.assertEqual(broadcast.status, Broadcast.Status.FAILED)

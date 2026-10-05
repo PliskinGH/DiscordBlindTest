@@ -1,4 +1,4 @@
-"""Discord controls a quiz is played with.
+"""Discord controls a game is played with.
 
 Each control holds the cog and calls its operations, so the slash commands and
 the controls share one implementation.
@@ -41,7 +41,7 @@ SETUP_CLEAR_ID = 'blindtest_setup_clear'
 SETUP_END_ID = 'blindtest_setup_end'
 
 # Panel labels.
-END_QUIZ_LABEL = 'End the quiz'
+END_QUIZ_LABEL = 'End the game'
 
 
 def pick_max(choices: 'list[dict] | None') -> int:
@@ -235,7 +235,7 @@ class QueuedPickSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         """Drop the queued questions the host picked."""
-        await self.cog.drop_selection(interaction, self.values)
+        await self.cog.remove_selection(interaction, self.values)
 
 
 class GamePickSelect(discord.ui.Select):

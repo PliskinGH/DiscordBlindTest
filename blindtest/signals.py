@@ -18,21 +18,21 @@ def _after_commit(function, *args) -> None:
 @receiver(post_save, sender=Question)
 @receiver(post_delete, sender=Question)
 def _question_changed(sender, instance, **kwargs) -> None:
-    """Drop the lists the question is offered in."""
+    """Forget the lists the question is offered in."""
     _after_commit(bump, library_scope(instance.guild_id))
 
 
 @receiver(post_save, sender=Answer)
 @receiver(post_delete, sender=Answer)
 def _answer_changed(sender, instance, **kwargs) -> None:
-    """Drop the lists holding a label the answer is written in."""
+    """Forget the lists holding a label the answer is written in."""
     _after_commit(bump, library_scope(instance.guild_id))
 
 
 @receiver(post_save, sender=AnswerVariant)
 @receiver(post_delete, sender=AnswerVariant)
 def _variant_changed(sender, instance, **kwargs) -> None:
-    """Drop the lists holding the answer the variant belongs to."""
+    """Forget the lists holding the answer the variant belongs to."""
     guild_id = (Answer.objects.filter(pk=instance.answer_id)
                 .values_list('guild_id', flat=True).first())
     _after_commit(bump, library_scope(guild_id))
@@ -41,7 +41,7 @@ def _variant_changed(sender, instance, **kwargs) -> None:
 @receiver(post_save, sender=Round)
 @receiver(post_delete, sender=Round)
 def _round_changed(sender, instance, **kwargs) -> None:
-    """Drop the queue and game lists of the guild the round is played in."""
+    """Forget the queue and game lists of the guild the round is played in."""
     _after_commit(bump, game_scope(instance.game_id))
     guild_id = (Game.objects.filter(pk=instance.game_id)
                 .values_list('guild_id', flat=True).first())
@@ -52,5 +52,5 @@ def _round_changed(sender, instance, **kwargs) -> None:
 @receiver(post_save, sender=Game)
 @receiver(post_delete, sender=Game)
 def _game_changed(sender, instance, **kwargs) -> None:
-    """Drop the game lists of the guild the game belongs to."""
+    """Forget the game lists of the guild the game belongs to."""
     _after_commit(bump, guild_scope(instance.guild_id))

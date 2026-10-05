@@ -70,9 +70,9 @@ def create_round(game: Game, host_member: DiscordMember, question: Question,
                                       index))
 
 
-def start_round(game: Game, host_member: DiscordMember,
-                question: Question | None = None,
-                quiz_type: str = '') -> dict:
+def open_round(game: Game, host_member: DiscordMember,
+               question: Question | None = None,
+               quiz_type: str = '') -> dict:
     """Open the next round of the game, and return what its message shows.
     Queued rounds created beforehand are started in their index order;
     otherwise the given question (or an unplayed one) is drawn.
@@ -84,7 +84,8 @@ def start_round(game: Game, host_member: DiscordMember,
         raise ValueError(QUIZ_OVER)
     current = current_round(game)
     if current is not None and not current.is_revealed:
-        raise ValueError(_("Reveal the current round before starting the next one."))
+        raise ValueError(
+            _("Reveal the current round before opening the next one."))
     queued = game.rounds.filter(started_at__isnull=True).order_by('index').first()
     if question is not None:
         require_visible(game, question)

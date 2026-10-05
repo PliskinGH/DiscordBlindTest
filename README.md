@@ -54,12 +54,12 @@ python manage.py test         # test suite
 | --- | --- |
 | `/ping` | Gateway latency and number of games in the database |
 | `/quiz setup` | Set up a game: optional `channel` where to play the game and `role` to ping, plus name, quiz type and scoring mode (hosts only) |
-| `/quiz publish` | Publish the game being prepared and announce it in its channel (hosts only) |
+| `/quiz publish` | Publish the game being prepared, in its channel (hosts only) |
 | `/quiz panel` | Reopen the private controls of the running game (hosts only) |
 | `/quiz guess` | Submit your answer for the round in play (players) |
 | `/quiz queue` | Queue the question of the next round, optionally played as another quiz type (hosts only) |
-| `/quiz unqueue` | Drop a question queued for a round (hosts only) |
-| `/quiz clear` | Drop every queued question of the game (hosts only) |
+| `/quiz unqueue` | Remove a question queued for a round (hosts only) |
+| `/quiz clear` | Remove every queued question of the game (hosts only) |
 | `/quiz copy` | Queue the questions another game was played with (hosts only) |
 | `/quiz next` | Open the next round: the queued question or a drawn one (hosts only) |
 | `/quiz reveal` | Reveal the current round and publish the standings (hosts only) |
@@ -78,7 +78,7 @@ python manage.py test         # test suite
 | `/library variant list` | Show the variants accepted for an answer (hosts) |
 | `/library variant remove` | Stop accepting a variant (hosts) |
 | `/library question add` | Create a question, with multiple choice options when `choices` is given and a listening `media` link. Separate the accepted variants of an answer with `\|` (hosts) |
-| `/library question edit` | Change the fields of a question, with the options of `question add`: an option left out keeps its field, `-` drops it. The `answer` itself cannot be dropped (hosts) |
+| `/library question edit` | Change the fields of a question, with the options of `question add`: an option left out keeps its field, `-` clears it. The `answer` itself cannot be cleared (hosts) |
 
 `/blindtest` is an alias of `/quiz`: every subcommand exists under both names, and takes the same options, except the two that name a quiz type.
 
@@ -104,10 +104,10 @@ python manage.py test         # test suite
   - `/quiz setup role=...` defines a specific role for the game.
   - No ping if none of these are set.
 
-- `/quiz setup` sets up a game without announcing it.
-  - The host receives a private setup panel to add, drop or copy questions.
+- `/quiz setup` sets up a game without publishing it.
+  - The host receives a private setup panel to add, remove or copy questions.
   - The panel runs the same operations as `/quiz queue`, `/quiz unqueue`, `/quiz clear` and `/quiz copy`.
-  - `/quiz publish` announces the game in its channel and swaps the setup panel for the host panel.
+  - `/quiz publish` publishes the game in its channel and swaps the setup panel for the host panel.
   - No round can open before the game is published.
   - A game ended while it is still being prepared closes without a public recap.
 
@@ -116,7 +116,7 @@ python manage.py test         # test suite
   - Every round is posted with an **Answer** button opening the answer form of the round in play.
   - The panel and the round buttons keep working after a bot restart: their state lives in the database.
 
-- A game change that has to be announced, opened, answered or ended is recorded as a **broadcast**, posted by the bot holding the Discord connection:
+- A game change that has to be published, opened, revealed or ended is recorded as a **broadcast**, posted by the bot holding the Discord connection:
   - The slash commands and their controls post the broadcast they just recorded.
   - A caller without a connection (see [Web admin](#web-admin) section) records it only, and the bot posts it on its next pass.
   - Every broadcast is made exactly once, whichever client claims it first.
@@ -129,7 +129,7 @@ python manage.py test         # test suite
   - A guess matching a variant of the expected answer is scored as correct.
 - `/library question edit` changes the fields of a question of the server the command runs in:
   - It takes the options of `/library question add`; an option left out keeps its field.
-  - A value of `-` drops the field, except for `answer`: a question needs one.
+  - A value of `-` clears the field, except for `answer`: a question needs one.
 
 ## Quiz types
 
@@ -184,5 +184,5 @@ The web process offers an alternative interface (mainly for hosts, but can also 
   - Feature parity with the discord bot, with the host controls and also the guess from the players.
   - Every change is recorded as a **broadcast** and posted by the bot holding the Discord connection, so everything is posted on the Discord channel even if acted from the web.
   - The live parts of the control room and of the answer page follow the game with [htmx](https://htmx.org): the round, the number of answers and the standings update by themselves, so an answer given in Discord shows up without reloading.
-  - The control room lists the recent posts of its game, of every status, and a post that failed can be queued again.
+  - The control room lists the recent broadcasts of its game, and a broadcast that failed can be posted again.
   - Questions to queue and games to copy from are searched server-side. The search needs a cache shared by every process that serves the web admin: set `REDIS_URL` in production, since the in-memory cache of a single worker will not answer a search another worker is asked for.

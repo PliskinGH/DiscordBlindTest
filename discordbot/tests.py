@@ -17,9 +17,9 @@ from blindtest.models import (Answer, Broadcast, Game, Guess, Question, QuizType
                               Round)
 from discordcore.mentions import user_mention
 from discordcore.models import Guild, Player
-from blindtest.services.broadcasts import (claim_broadcast, close_round,
-                                           open_round)
-from blindtest.services.games import active_game, create_game, finish_game
+from blindtest.services.broadcasts import (claim_broadcast, post_round_reveal,
+                                           post_round_open)
+from blindtest.services.games import active_game, create_game, end_game
 from blindtest.services.guessing import submit_guess
 from blindtest.services.guilds import (add_host, require_host,
                                        set_default_channel,
@@ -27,7 +27,7 @@ from blindtest.services.guilds import (add_host, require_host,
 from blindtest.services.library import (add_question, edit_question,
                                         question_choices)
 from blindtest.services.rounds import (create_round, current_round,
-                                       queued_count, reveal_round, start_round)
+                                       queued_count, reveal_round, open_round)
 
 from . import embeds
 from .bot import create_bot
@@ -78,7 +78,7 @@ class EmbedTests(SimpleTestCase):
     def test_every_embed_names_the_game(self) -> None:
         scores = [{'username': 'a', 'discord_name': 'A', 'points': 3}]
         payload = game_payload(scores=scores)
-        built = [embeds.announce_embed(payload, '<@1>'),
+        built = [embeds.publication_embed(payload, '<@1>'),
                  embeds.round_embed(payload),
                  embeds.reveal_embed(payload),
                  embeds.scores_embed(
@@ -89,8 +89,8 @@ class EmbedTests(SimpleTestCase):
             with self.subTest(embed=embed.title):
                 self.assertIn('Fiesta', embed.title)
 
-    def test_the_announcement_shows_no_host_command(self) -> None:
-        embed = embeds.announce_embed(game_payload(), '<@1>')
+    def test_the_publication_shows_no_host_command(self) -> None:
+        embed = embeds.publication_embed(game_payload(), '<@1>')
         text = embed_text(embed)
         for command in ('/quiz', '/blindtest'):
             with self.subTest(command=command):
@@ -100,7 +100,7 @@ class EmbedTests(SimpleTestCase):
     def test_no_public_embed_leaks_the_answer_before_the_reveal(self) -> None:
         payload = game_payload(prompt='Guess the song!', question_text='Guess the song!',
                                answer_text='Zebra', expected='Zebra')
-        for embed in (embeds.announce_embed(payload, '<@1>'),
+        for embed in (embeds.publication_embed(payload, '<@1>'),
                       embeds.round_embed(payload)):
             with self.subTest(embed=embed.title):
                 self.assertNotIn('Zebra', embed_text(embed))
@@ -461,7 +461,7 @@ class GameControlTests(SimpleTestCase):
             with self.subTest(view=type(view).__name__):
                 self.assertIs(view.cog, cog)
         for operation in ('ask_question', 'clear', 'copy_questions',
-                          'copy_selection', 'drop_selection', 'end_game',
+                          'copy_selection', 'remove_selection', 'end_game',
                           'open_guess_form', 'open_next_round', 'publish',
                           'queue_question', 'queue_selection', 'record_guess',
                           'reveal_round', 'send_setup_panel',
@@ -539,7 +539,7 @@ class FlowResultTests(TransactionTestCase):
                 expected_answer=Answer.objects.create(text='Song'),
                 secondary_answer=Answer.objects.create(text='Band'))
             round_ = Round.objects.get(
-                pk=start_round(game, host, question)['round_id'])
+                pk=open_round(game, host, question)['round_id'])
             submit_guess(
                 round_, Player.objects.from_discord(FakeMember(43)),
                 'Song', 'Band')
@@ -605,7 +605,7 @@ class FlowTestCase(TransactionTestCase):
         game = create_game(guild, 100, FakeMember(42),
                                    quiz_type=quiz_type or QuizType.BLIND_TEST,
                                    ping_role_id=ping_role_id)
-        start_round(game, FakeMember(42),
+        open_round(game, FakeMember(42),
                              self.question(quiz_type, 'Song', 'Band'))
         self.question(quiz_type, 'Spare', 'Spare Band')
 
@@ -698,7 +698,7 @@ class EndGameFlowTests(FlowTestCase):
         [view] = interaction.original_edits
         self.assertTrue(all(item.disabled for item in view.children))
         self.assertEqual(interaction.followup.sent,
-                         ['No quiz is running in this server.'])
+                         ['No game is running in this server.'])
 
 
 class BroadcastFlowTests(FlowTestCase):
@@ -715,7 +715,7 @@ class BroadcastFlowTests(FlowTestCase):
         """Open a round the way a caller without a client would."""
         game = active_game(Guild.objects.get(discord_id=1))
         reveal_round(current_round(game), FakeMember(42))
-        open_round(game, FakeMember(42))
+        post_round_open(game, FakeMember(42))
 
     def test_the_client_posts_a_recorded_round(self) -> None:
         self.create_game()
@@ -764,7 +764,7 @@ class BroadcastFlowTests(FlowTestCase):
         channel = FakeChannel()
         cog = self._cog_posting_to(channel)
         game = active_game(Guild.objects.get(discord_id=1))
-        close_round(current_round(game), FakeMember(42))
+        post_round_reveal(current_round(game), FakeMember(42))
         asyncio.run(cog.flush_broadcasts())
         titles = [embed.title for embed in channel.embeds]
         self.assertTrue(any('answer' in title for title in titles), titles)
@@ -994,7 +994,7 @@ class AnswerFlowTests(FlowTestCase):
 
 
 class SetupFlowTests(FlowTestCase):
-    """The setup panel prepares a game that publish announces."""
+    """The setup panel prepares a game that publish makes public."""
 
     @staticmethod
     def _control(view: discord.ui.View, custom_id: str):
@@ -1108,7 +1108,7 @@ class SetupFlowTests(FlowTestCase):
                          ['1 question(s) added, 0 skipped.'])
         self.assertEqual(queued_count(Game.objects.get()), 1)
 
-    def test_the_remove_select_drops_the_picked_questions(self) -> None:
+    def test_the_remove_select_removes_the_picked_questions(self) -> None:
         _cog, panel, _host = self._setup()
         queued = Round.objects.get(
             pk=create_round(
@@ -1117,7 +1117,7 @@ class SetupFlowTests(FlowTestCase):
         select = self._control(panel, SETUP_REMOVE_ID)
         select._values = [str(queued.pk)]
         click = self._click(select)
-        self.assertEqual(click.followup.sent, ['1 question(s) dropped.'])
+        self.assertEqual(click.followup.sent, ['1 question(s) removed.'])
         self.assertEqual(queued_count(Game.objects.get()), 0)
 
     def test_the_clear_button_empties_the_queue(self) -> None:
@@ -1125,15 +1125,15 @@ class SetupFlowTests(FlowTestCase):
         create_round(Game.objects.get(), FakeMember(42),
                               self.question('', 'Queued', 'Band'))
         click = self._click(self._control(panel, SETUP_CLEAR_ID))
-        self.assertEqual(click.followup.sent, ['1 question(s) dropped.'])
+        self.assertEqual(click.followup.sent, ['1 question(s) removed.'])
         self.assertEqual(queued_count(Game.objects.get()), 0)
 
     def test_the_copy_select_queues_the_questions_of_another_game(self) -> None:
         guild = self.prepare_guild()
         older = create_game(guild, 100, FakeMember(42))
-        start_round(older, FakeMember(42),
+        open_round(older, FakeMember(42),
                              self.question('', 'Old', 'Band'))
-        finish_game(older, FakeMember(42))
+        end_game(older, FakeMember(42))
         host = FakeInteraction()
         asyncio.run(GameCog(create_bot()).setup_game(host, 'STANDARD', 'Fiesta'))
         select = self._control(host.followup.views[0], SETUP_COPY_ID)
@@ -1145,7 +1145,7 @@ class SetupFlowTests(FlowTestCase):
             queued_count(Game.objects.get(name='Fiesta')), 1)
 
 
-    def test_publish_announces_the_game_and_swaps_in_the_host_panel(self) -> None:
+    def test_publish_posts_the_game_and_swaps_in_the_host_panel(self) -> None:
         _cog, panel, _host = self._setup()
         click = self._click(self._control(panel, SETUP_PUBLISH_ID))
         game = Game.objects.get()
@@ -1221,7 +1221,7 @@ class SetupFlowTests(FlowTestCase):
         self.assertTrue(all(view is None for view in player.followup.views))
         self.assertIn('above me', player.followup.sent[0])
 
-    def test_the_announcement_calls_in_the_role_of_the_game(self) -> None:
+    def test_the_publication_calls_in_the_role_of_the_game(self) -> None:
         guild = self.prepare_guild()
         set_default_ping_role(guild, 99, FakeMember(42, manage_guild=True))
         host = FakeInteraction()
@@ -1231,7 +1231,7 @@ class SetupFlowTests(FlowTestCase):
         asyncio.run(cog.publish(click))
         self.assertEqual(click.channel.contents, ['<@&99>'])
 
-    def test_the_announcement_of_a_silent_game_calls_nobody_in(self) -> None:
+    def test_the_publication_of_a_silent_game_calls_nobody_in(self) -> None:
         _cog, panel, _host = self._setup()
         click = self._click(self._control(panel, SETUP_PUBLISH_ID))
         self.assertEqual(click.channel.contents, [None])
@@ -1348,7 +1348,7 @@ class AdminPingTests(FlowTestCase):
         interaction = self._run(AdminCog.ping_clear, self._admin_interaction())
         self.assertIsNone(Guild.objects.get().default_ping_role_id)
         self.assertEqual(interaction.followup.sent,
-                         ['Quizzes now ping nobody.'])
+                         ['Games now ping nobody.'])
 
     def test_showing_the_default_ping_role_reports_it(self) -> None:
         self.prepare_guild()
@@ -1410,7 +1410,7 @@ class AdminChannelTests(FlowTestCase):
         interaction = self._run(AdminCog.channel_clear, self._admin_interaction())
         self.assertIsNone(Guild.objects.get().default_channel_id)
         self.assertEqual(interaction.followup.sent,
-                         ['Quizzes are now played where they are started.'])
+                         ['Games are now played where they are started.'])
 
     def test_showing_the_default_channel_reports_it(self) -> None:
         self.prepare_guild()
@@ -1450,7 +1450,7 @@ class LibraryVariantTests(FlowTestCase):
                          ['Variant saved: **Song (Remastered)**.'])
         self.assertEqual(listed.followup.sent, ['**Song (Remastered)**'])
         self.assertEqual(removed.followup.sent,
-                         ['Variant dropped: **song (remastered)**.'])
+                         ['Variant removed: **song (remastered)**.'])
         self.assertEqual(Answer.objects.get(text='Song').variants.count(), 0)
 
     def test_a_repeated_variant_is_refused(self) -> None:

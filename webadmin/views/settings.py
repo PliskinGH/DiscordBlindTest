@@ -138,7 +138,7 @@ class ChannelView(AdminRequired, View):
         if _apply(request, set_default_channel, guild, channel_id,
                   member):
             label = discord_api.channel_label(guild_id, channel_id)
-            messages.success(request, f'Quizzes are now played in {label}.')
+            messages.success(request, f'Games are now played in {label}.')
         return _back(guild_id)
 
 

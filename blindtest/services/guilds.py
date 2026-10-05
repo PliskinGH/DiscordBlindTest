@@ -30,7 +30,7 @@ def is_host(guild: Guild, host_member: DiscordMember) -> bool:
 def require_host(guild: Guild, host_member: DiscordMember) -> None:
     """Raise PermissionError when the member is not a host of the guild."""
     if not is_host(guild, host_member):
-        raise PermissionError(_("Only hosts of this server can run a quiz. "
+        raise PermissionError(_("Only hosts of this server can run a game. "
                                 "Ask an administrator for the host permission."))
 
 

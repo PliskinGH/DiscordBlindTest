@@ -259,6 +259,41 @@ def remember_member(discord_user_id: int, name: str) -> None:
         Player.objects.from_discord(LocalUser(id=discord_user_id, name=name))
 
 
+def resolve_member(discord_guild_id: int, name: str) -> Player | None:
+    """Return the player row of the member a host named, or None when none is.
+
+    A mention is taken as it stands; anything else is looked up in the server,
+    which is what makes typing a name worth doing. Either way the Discord
+    name of the member is kept, so no later read has to ask Discord for it.
+
+    Raises requests.RequestException when Discord cannot be reached.
+    """
+    given = name.strip()
+    if given.startswith('<@'):
+        return _remember_member(discord_guild_id, given)
+    member = fetch_bot_member(discord_guild_id, given)
+    if member is None:
+        return None
+    remember_member(member['id'], member.get('name') or member['label'])
+    return Player.objects.filter(discord_user_id=member['id']).first()
+
+
+def _remember_member(discord_guild_id: int, mention: str) -> Player | None:
+    """Return the player row of a pasted user mention, remembering its name.
+
+    A role mention names no player, and a mention too malformed to read is
+    left for the service to refuse.
+    """
+    try:
+        is_role, discord_id = parse_mention(mention)
+    except ValueError:
+        return None
+    if is_role:
+        return None
+    member_label(discord_guild_id, discord_id)
+    return Player.objects.filter(discord_user_id=discord_id).first()
+
+
 def member_label(discord_guild_id: int, discord_user_id: int) -> str:
     """Return how a member of a server is shown, with the name Discord knows.
 

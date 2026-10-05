@@ -1,13 +1,13 @@
 """Cache invalidation of the writes to the questions, rounds and games."""
 
 from django.db import transaction
-from django.db.models.signals import post_delete, post_save
+from django.db.models.signals import m2m_changed, post_delete, post_save
 from django.dispatch import receiver
 
 from discordcore.cache import bump, guild_scope
 
 from .caching import game_scope, library_scope, rounds_scope
-from .models import Answer, AnswerVariant, Game, Question, Round
+from .models import Answer, AnswerVariant, Game, Question, Round, Team
 
 
 def _after_commit(function, *args) -> None:
@@ -54,3 +54,11 @@ def _round_changed(sender, instance, **kwargs) -> None:
 def _game_changed(sender, instance, **kwargs) -> None:
     """Forget the game lists of the guild the game belongs to."""
     _after_commit(bump, guild_scope(instance.guild_id))
+
+
+@receiver(post_save, sender=Team)
+@receiver(post_delete, sender=Team)
+@receiver(m2m_changed, sender=Team.players.through)
+def _team_changed(sender, instance, **kwargs) -> None:
+    """Forget the teams of the game a team belongs to."""
+    _after_commit(bump, game_scope(instance.game_id))

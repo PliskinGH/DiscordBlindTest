@@ -159,7 +159,7 @@ def round_answers(round_: Round) -> dict:
 def reveal_payload(round_: Round) -> dict:
     """Return what the answer of a revealed round and its standings show."""
     display = round_display(round_)
-    display['scores'] = game_scores(round_.game)
+    display['player_scores'] = game_scores(round_.game)
     display.update(round_answers(round_))
     return display
 

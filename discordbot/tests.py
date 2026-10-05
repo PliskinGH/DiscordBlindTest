@@ -12,6 +12,7 @@ from django.core.cache import cache
 from django.db import connections
 from django.test import SimpleTestCase, TransactionTestCase
 
+from discordblindtest.testing import NoNetworkMixin
 from blindtest import constants, services
 from blindtest.models import (Answer, Broadcast, Game, Guess, Question, QuizType,
                               Round)
@@ -28,12 +29,15 @@ from blindtest.services.library import (add_question, edit_question,
                                         question_choices)
 from blindtest.services.rounds import (create_round, current_round,
                                        queued_count, reveal_round, open_round)
+from blindtest.services.teams import add_team
 
 from . import embeds
 from .bot import create_bot
 from .cogs.admin import AdminCog
 from .cogs.game import GameCog, answer_form_title
 from .cogs.library import LibraryCog, question_autocomplete
+from .cogs.teams import (NO_GAME, TeamsCog,
+                         copyable_team_autocomplete, team_autocomplete)
 from .db import guild_for, player_for, run_db
 from .ui import (ANSWER_TITLE, HOST_END_ID, SETUP_ADD_ID, SETUP_CLEAR_ID,
                  SETUP_COPY_ID, SETUP_END_ID, SETUP_PUBLISH_ID,
@@ -49,7 +53,7 @@ def game_payload(**overrides) -> dict:
                'answer_text': 'Song (Band)', 'expected': 'Song', 'options': [],
                'prompt_set': True,
                'queued': 7, 'answered': 2, 'right': 1, 'right_names': ['user43'],
-               'scores': [], 'teams': [], 'rounds': 1, 'answers': 2,
+               'player_scores': [], 'team_scores': [], 'rounds': 1, 'answers': 2,
                'available': 5, 'created_at': None, 'finished_at': None,
                'game_id': 1, 'channel_id': 100}
     payload.update(overrides)
@@ -72,12 +76,12 @@ def answer_form(index: int = 1, quiz_type: str = 'BLIND_TEST',
             'options': options or []}
 
 
-class EmbedTests(SimpleTestCase):
+class EmbedTests(NoNetworkMixin, SimpleTestCase):
     """Public embeds name the game and stay within Discord's limits."""
 
     def test_every_embed_names_the_game(self) -> None:
         scores = [{'username': 'a', 'discord_name': 'A', 'points': 3}]
-        payload = game_payload(scores=scores)
+        payload = game_payload(player_scores=scores)
         built = [embeds.publication_embed(payload, '<@1>'),
                  embeds.round_embed(payload),
                  embeds.reveal_embed(payload),
@@ -107,8 +111,8 @@ class EmbedTests(SimpleTestCase):
 
     def test_the_round_scores_share_the_shape_of_the_final_scores(self) -> None:
         scores = [{'username': 'a', 'discord_name': 'A', 'points': 3}]
-        payload = game_payload(scores=scores,
-                               teams=[{'name': 'Reds', 'points': 3}])
+        payload = game_payload(player_scores=scores,
+                               team_scores=[{'name': 'Reds', 'points': 3}])
         round_scores = embeds.scores_embed(
             payload, 'Round 3 scores',
             embeds.leader_line(scores, 'is currently winning'))
@@ -151,8 +155,8 @@ class EmbedTests(SimpleTestCase):
 
     def test_the_recap_summarises_the_game(self) -> None:
         embed = embeds.recap_embed(game_payload(
-            scores=[{'username': 'a', 'discord_name': 'A', 'points': 3}],
-            teams=[{'name': 'Reds', 'points': 3}], rounds=3, answers=9))
+            player_scores=[{'username': 'a', 'discord_name': 'A', 'points': 3}],
+            team_scores=[{'name': 'Reds', 'points': 3}], rounds=3, answers=9))
         names = [field.name for field in embed.fields]
         self.assertEqual(names, ['Standings', 'Teams', 'Rounds played',
                                  'Answers given', 'Quiz type'])
@@ -161,7 +165,7 @@ class EmbedTests(SimpleTestCase):
     def test_a_long_standings_list_says_how_many_players_are_left(self) -> None:
         scores = [{'username': f'user{index}', 'discord_name': 'n' * 200,
                    'points': index} for index in range(40)]
-        embed = embeds.recap_embed(game_payload(scores=scores))
+        embed = embeds.recap_embed(game_payload(player_scores=scores))
         standings = embed.fields[0]
         self.assertEqual(standings.name, 'Standings')
         self.assertLessEqual(len(standings.value), embeds.FIELD_VALUE_LIMIT)
@@ -188,7 +192,7 @@ class EmbedTests(SimpleTestCase):
     def test_a_message_stays_under_the_total_limit(self) -> None:
         scores = [{'username': f'user{index}', 'discord_name': 'n' * 200,
                    'points': index} for index in range(40)]
-        payload = game_payload(scores=scores)
+        payload = game_payload(player_scores=scores)
         built = embeds.fit_all([embeds.reveal_embed(payload),
                                 embeds.scores_embed(
                                     payload, 'Round 3 scores',
@@ -412,7 +416,7 @@ async def _loaded_bot() -> commands.Bot:
     return bot
 
 
-class BotSetupTests(SimpleTestCase):
+class BotSetupTests(NoNetworkMixin, SimpleTestCase):
     def test_the_cog_registers_the_documented_commands(self) -> None:
         names = asyncio.run(_slash_command_names())
         self.assertEqual(names, [
@@ -432,10 +436,13 @@ class BotSetupTests(SimpleTestCase):
             'quiz', 'quiz clear', 'quiz copy', 'quiz end', 'quiz guess',
             'quiz next', 'quiz panel', 'quiz publish', 'quiz queue',
             'quiz reveal', 'quiz setup', 'quiz unqueue',
+            'teams', 'teams add', 'teams copy', 'teams list', 'teams members',
+            'teams members add', 'teams members remove',
+            'teams remove', 'teams rename',
         ])
 
 
-class GameControlTests(SimpleTestCase):
+class GameControlTests(NoNetworkMixin, SimpleTestCase):
     def test_the_controls_survive_a_bot_restart(self) -> None:
         views = asyncio.run(_loaded_bot()).get_cog('GameCog').controls()
         self.assertTrue(all(view.timeout is None for view in views))
@@ -470,19 +477,19 @@ class GameControlTests(SimpleTestCase):
                 self.assertTrue(callable(getattr(cog, operation, None)))
 
 
-class OrmBridgeTests(SimpleTestCase):
+class OrmBridgeTests(NoNetworkMixin, SimpleTestCase):
     def test_the_discord_layer_never_touches_the_orm(self) -> None:
         """Only the bridge may build ORM calls, so no lazy row can reach the loop."""
         from . import ui
-        from .cogs import admin, game, library
-        for module in (admin, game, library, ui):
+        from .cogs import admin, game, library, teams
+        for module in (admin, game, library, teams, ui):
             with self.subTest(module=module.__name__):
                 self.assertNotIn('.objects.', getsource(module))
         with self.subTest(module=embeds.__name__):
             self.assertNotIn('.objects.', getsource(embeds))
 
 
-class RunDbTests(TransactionTestCase):
+class RunDbTests(NoNetworkMixin, TransactionTestCase):
     def setUp(self) -> None:
         # A cached row outlives a test and would point at a rolled back one.
         cache.clear()
@@ -521,7 +528,7 @@ class RunDbTests(TransactionTestCase):
             asyncio.run(run_db(require_host, guild, FakeMember(43)))
 
 
-class FlowResultTests(TransactionTestCase):
+class FlowResultTests(NoNetworkMixin, TransactionTestCase):
     def setUp(self) -> None:
         cache.clear()
 
@@ -549,7 +556,7 @@ class FlowResultTests(TransactionTestCase):
     def test_the_reveal_crosses_the_bridge_without_lazy_queries(self) -> None:
         result = self._revealed_payload()
         self.assertEqual(result['answer_text'], 'Song (Band)')
-        self.assertEqual([row['points'] for row in result['scores']], [2])
+        self.assertEqual([row['points'] for row in result['player_scores']], [2])
 
     @staticmethod
     def _picker_choices() -> list[dict]:
@@ -574,7 +581,7 @@ class FlowResultTests(TransactionTestCase):
         asyncio.run(check())
 
 
-class FlowTestCase(TransactionTestCase):
+class FlowTestCase(NoNetworkMixin, TransactionTestCase):
     """A guild with a host, a running game and a round in play."""
 
     def setUp(self) -> None:
@@ -622,6 +629,243 @@ class FlowTestCase(TransactionTestCase):
         cog = LibraryCog(create_bot())
         asyncio.run(cog_function.callback(cog, interaction, *args, **kwargs))
         return cog
+
+
+class TeamCommandTests(FlowTestCase):
+    """The team commands fill the teams of the game played in a server."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.guild = self.prepare_guild()
+        self.game = create_game(self.guild, 100, FakeMember(42))
+
+    @staticmethod
+    def _run(command, interaction, *args, **kwargs) -> FakeInteraction:
+        """Run a team command the way Discord would."""
+        asyncio.run(command.callback(TeamsCog(create_bot()), interaction,
+                                    *args, **kwargs))
+        return interaction
+
+    @staticmethod
+    def _host_interaction() -> FakeInteraction:
+        return FakeInteraction()
+
+    @staticmethod
+    def _stranger_interaction() -> FakeInteraction:
+        """Return an interaction of a member who is not a host."""
+        interaction = FakeInteraction()
+        interaction.user = FakeMember(43)
+        return interaction
+
+    def test_a_host_creates_a_team(self) -> None:
+        interaction = self._run(TeamsCog.team_add,
+                                self._host_interaction(), 'Reds')
+        self.assertEqual([team.name for team in self.game.teams.all()],
+                         ['Reds'])
+        self.assertEqual(interaction.followup.sent, ['Reds created.'])
+
+    def test_a_host_creates_a_team_with_its_first_member(self) -> None:
+        interaction = self._run(TeamsCog.team_add,
+                                self._host_interaction(), 'Reds',
+                                FakeMember(43))
+        team = self.game.teams.get()
+        self.assertEqual([player.discord_user_id
+                          for player in team.players.all()], [43])
+        self.assertEqual(interaction.followup.sent, ['Reds created.'])
+
+    def test_a_stranger_does_not_create_a_team(self) -> None:
+        interaction = self._run(TeamsCog.team_add,
+                                self._stranger_interaction(), 'Reds')
+        self.assertEqual(self.game.teams.count(), 0)
+        self.assertIn('Only hosts', interaction.followup.sent[0])
+
+    def test_a_duplicated_team_name_is_refused(self) -> None:
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Reds')
+        interaction = self._run(TeamsCog.team_add,
+                                self._host_interaction(), 'reds')
+        self.assertEqual(self.game.teams.count(), 1)
+        self.assertIn('already has a team', interaction.followup.sent[0])
+
+    def test_a_host_adds_a_member_to_a_team(self) -> None:
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Reds')
+        reds = self.game.teams.get().pk
+        interaction = self._run(TeamsCog.member_add,
+                                self._host_interaction(), str(reds),
+                                FakeMember(43))
+        team = self.game.teams.get()
+        self.assertEqual([player.discord_user_id
+                          for player in team.players.all()], [43])
+        self.assertEqual(interaction.followup.sent,
+                         ['user43 joins Reds.'])
+
+    def test_a_host_takes_a_member_out_of_a_team(self) -> None:
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Reds',
+                   FakeMember(43))
+        reds = self.game.teams.get().pk
+        interaction = self._run(TeamsCog.member_remove,
+                                self._host_interaction(), str(reds),
+                                FakeMember(43))
+        self.assertEqual(self.game.teams.get().players.count(), 0)
+        self.assertEqual(interaction.followup.sent,
+                         ['user43 leaves Reds.'])
+
+    def test_a_host_renames_a_team(self) -> None:
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Reds')
+        reds = self.game.teams.get().pk
+        interaction = self._run(TeamsCog.team_rename,
+                                self._host_interaction(), str(reds),
+                                'Crimson')
+        self.assertEqual([team.name for team in self.game.teams.all()],
+                         ['Crimson'])
+        self.assertEqual(interaction.followup.sent,
+                         ['The team is now Crimson.'])
+
+    def test_a_host_removes_a_team(self) -> None:
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Reds')
+        reds = self.game.teams.get().pk
+        interaction = self._run(TeamsCog.team_remove,
+                                self._host_interaction(), str(reds))
+        self.assertEqual(self.game.teams.count(), 0)
+        self.assertEqual(interaction.followup.sent, ['Reds removed.'])
+
+    def test_an_unknown_team_id_is_refused(self) -> None:
+        interaction = self._run(TeamsCog.team_remove,
+                                self._host_interaction(), '9999')
+        self.assertIn('no team with that id', interaction.followup.sent[0])
+
+    def test_a_team_of_another_game_is_refused(self) -> None:
+        _, foreign = self._played_game_with_a_team()
+        self.game = create_game(self.guild, 100, FakeMember(42))
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Reds')
+        interaction = self._run(TeamsCog.team_remove,
+                                self._host_interaction(), str(foreign.pk))
+        self.assertIn('no team with that id', interaction.followup.sent[0])
+
+    def test_the_picked_team_is_the_one_the_choice_offers(self) -> None:
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Reds')
+        offered = asyncio.run(team_autocomplete(self._host_interaction(), ''))
+        picked = offered[0].value
+        interaction = self._run(TeamsCog.team_rename,
+                                self._host_interaction(), picked, 'Crimson')
+        self.assertEqual([team.name for team in self.game.teams.all()],
+                         ['Crimson'])
+        self.assertEqual(interaction.followup.sent,
+                         ['The team is now Crimson.'])
+
+    def test_a_host_lists_the_teams_with_their_members(self) -> None:
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Reds',
+                   FakeMember(43))
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Blues')
+        interaction = self._run(TeamsCog.team_list,
+                                self._host_interaction())
+        self.assertEqual(interaction.followup.sent,
+                         ['**Blues**: nobody' + chr(10)
+                          + '**Reds**: user43'])
+
+    def test_a_game_without_a_team_says_so(self) -> None:
+        interaction = self._run(TeamsCog.team_list,
+                                self._host_interaction())
+        self.assertIn('no team', interaction.followup.sent[0])
+
+    def test_the_teams_of_an_ended_game_are_out_of_reach(self) -> None:
+        # The command names the game being played, and an ended one is not it.
+        self._run(TeamsCog.team_add, self._host_interaction(), 'Reds')
+        end_game(self.game, FakeMember(42))
+        interaction = self._run(TeamsCog.team_add,
+                                self._host_interaction(), 'Blues')
+        self.assertEqual(self.game.teams.count(), 1)
+        self.assertEqual(interaction.followup.sent, [NO_GAME])
+
+    def test_a_command_without_a_game_says_so(self) -> None:
+        end_game(self.game, FakeMember(42))
+        interaction = self._run(TeamsCog.team_add,
+                                self._host_interaction(), 'Blues')
+        self.assertEqual(interaction.followup.sent, [NO_GAME])
+
+    def test_a_host_copies_a_team_of_another_game(self) -> None:
+        past, source = self._played_game_with_a_team()
+        self.game = create_game(self.guild, 100, FakeMember(42))
+        interaction = self._run(TeamsCog.team_copy,
+                                self._host_interaction(), str(source.pk))
+        copied = self.game.teams.get()
+        self.assertEqual(copied.name, source.name)
+        self.assertEqual(interaction.followup.sent,
+                         [f'{source.name} copied, with its members.'])
+        self.assertEqual(past.teams.count(), 1)
+
+    def test_a_copied_team_brings_its_members_along(self) -> None:
+        _, source = self._played_game_with_a_team()
+        source.players.add(Player.objects.from_discord(FakeMember(43)))
+        self.game = create_game(self.guild, 100, FakeMember(42))
+        self._run(TeamsCog.team_copy, self._host_interaction(),
+                  str(source.pk))
+        self.assertEqual([player.discord_user_id for player in
+                          self.game.teams.get().players.all()], [43])
+
+    def test_copying_a_team_the_game_already_has_is_refused(self) -> None:
+        _, source = self._played_game_with_a_team()
+        self.game = create_game(self.guild, 100, FakeMember(42))
+        self._run(TeamsCog.team_add, self._host_interaction(), source.name)
+        interaction = self._run(TeamsCog.team_copy,
+                                self._host_interaction(), str(source.pk))
+        self.assertIn('already has a team called', interaction.followup.sent[0])
+        self.assertEqual(self.game.teams.count(), 1)
+
+    def test_copying_a_team_of_another_server_is_refused(self) -> None:
+        other = Guild.objects.create(discord_id=3, name='Other')
+        add_host(other, user_mention(42), FakeMember(42, manage_guild=True))
+        elsewhere = add_team(create_game(other, 100, FakeMember(42)),
+                             FakeMember(42), 'Reds')
+        interaction = self._run(TeamsCog.team_copy,
+                                self._host_interaction(), str(elsewhere.pk))
+        self.assertIn('another server', interaction.followup.sent[0])
+        self.assertEqual(self.game.teams.count(), 0)
+
+    def test_a_stranger_copies_no_team(self) -> None:
+        _, source = self._played_game_with_a_team()
+        self.game = create_game(self.guild, 100, FakeMember(42))
+        interaction = self._run(TeamsCog.team_copy,
+                                self._stranger_interaction(), str(source.pk))
+        self.assertIn('hosts', interaction.followup.sent[0])
+        self.assertEqual(self.game.teams.count(), 0)
+
+    def test_the_teams_to_copy_are_the_ones_of_the_other_games(self) -> None:
+        _, source = self._played_game_with_a_team()
+        self.game = create_game(self.guild, 100, FakeMember(42))
+        add_team(self.game, FakeMember(42), 'Blues')
+        choices = asyncio.run(copyable_team_autocomplete(
+            self._host_interaction(), ''))
+        self.assertEqual([choice.value for choice in choices], [str(source.pk)])
+
+    def test_the_teams_to_copy_are_named_after_their_game(self) -> None:
+        past, _ = self._played_game_with_a_team()
+        past.name = 'Friday quiz'
+        past.save(update_fields=['name'])
+        self.game = create_game(self.guild, 100, FakeMember(42))
+        [choice] = asyncio.run(copyable_team_autocomplete(
+            self._host_interaction(), ''))
+        self.assertEqual(choice.name, 'Friday quiz — Blues')
+
+    def test_the_teams_to_copy_are_searched_by_game_and_by_name(self) -> None:
+        past, _ = self._played_game_with_a_team()
+        past.name = 'Friday quiz'
+        past.save(update_fields=['name'])
+        self.game = create_game(self.guild, 100, FakeMember(42))
+        for term in ('Friday', 'blues'):
+            with self.subTest(term=term):
+                self.assertEqual(len(asyncio.run(copyable_team_autocomplete(
+                    self._host_interaction(), term))), 1)
+
+    def test_no_team_of_a_first_game_is_offered_to_copy(self) -> None:
+        add_team(self.game, FakeMember(42), 'Blues')
+        self.assertEqual(asyncio.run(copyable_team_autocomplete(
+            self._host_interaction(), '')), [])
+
+    def _played_game_with_a_team(self):
+        """End the game of this test case, with a team a host may copy."""
+        team = add_team(self.game, FakeMember(42), 'Blues')
+        end_game(self.game, FakeMember(42))
+        return self.game, team
 
 
 class EndGameFlowTests(FlowTestCase):
@@ -1612,13 +1856,13 @@ class LibraryQuestionTests(FlowTestCase):
         self.assertFalse(Answer.objects.filter(text='Wonderwall').exists())
 
 
-class DeferFirstTests(SimpleTestCase):
+class DeferFirstTests(NoNetworkMixin, SimpleTestCase):
     """Every flow must answer its interaction before touching the database."""
 
     DB_CALLS = {'guild_for', 'player_for', 'run_db'}
     # Autocomplete cannot be deferred: it answers with choices within 3 seconds.
     EXEMPT = {'question_autocomplete', 'queued_autocomplete',
-              'game_autocomplete'}
+              'game_autocomplete', 'copyable_team_autocomplete'}
     # Helpers an already deferred flow calls, answering through its followup.
     AFTER_DEFERRING = {'answer_refused_setup', 'post_broadcast',
                        'deliver_broadcast', 'flush_broadcasts'}

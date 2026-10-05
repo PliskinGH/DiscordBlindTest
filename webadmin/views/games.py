@@ -1,14 +1,16 @@
 """The control room where a host runs a game from the browser."""
 
+import requests
 from django.contrib import messages
 from django.http import Http404
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.utils.translation import gettext_lazy as _
 from django.views import View
 from django.views.generic import TemplateView
 from django_select2.views import AutoResponseView
 
-from blindtest.models import Game, QuizType
+from blindtest.models import Game, QuizType, Team
 from blindtest.services.broadcasts import (post_publication, post_game_end,
                                            post_round_reveal, game_broadcasts,
                                            post_round_open)
@@ -21,14 +23,19 @@ from blindtest.services.guessing import (answer_form, round_display,
                                          submit_multiple_choice)
 from blindtest.services.guilds import is_host
 from blindtest.services.rounds import current_round
+from blindtest.services.teams import (add_team, assign_player, copy_team_by_pk,
+                                      remove_player, remove_team, rename_team,
+                                      teams_of)
 
 from .. import discord_api
-from ..forms import (ChoiceGuessForm, CopyForm, GuessForm, QueueForm,
-                     SetupGameForm, UnqueueForm, form_errors)
+from ..forms import (ChoiceGuessForm, CopyForm, CopyTeamForm, GuessForm,
+                      QueueForm, RenameTeamForm, SetupGameForm, TeamForm,
+                      TeamMemberForm, UnqueueForm, form_errors)
 from ..permissions import (GuildAccessMixin, HostRequired, member_for,
                            require_guild, require_host_member)
 
 CLEAR = 'clear'
+REMOVE = 'remove'
 
 
 def _back(game: Game):
@@ -72,6 +79,29 @@ def _hosts(request, game) -> bool:
     """
     guild = require_guild(game.guild.discord_id)
     return is_host(guild, member_for(request, guild.discord_id))
+
+
+def _named_member(request, guild_id: int, name: str):
+    """Return the player a host named, telling them when there is none."""
+    given = name.strip()
+    try:
+        player = discord_api.resolve_member(guild_id, given)
+    except requests.RequestException:
+        messages.error(request, _('Discord could not be reached, try again.'))
+        return None
+    if player is None:
+        messages.error(request, _('No member named "%(name)s" in this server. '
+                                  'Paste a user mention instead.')
+                       % {'name': given})
+    return player
+
+
+def _team(game: Game, pk) -> Team:
+    """Return the team of a game the URL names, refusing one of another game."""
+    team = Team.objects.filter(game=game, pk=pk).first()
+    if team is None:
+        raise Http404(_('This game has no such team.'))
+    return team
 
 
 def _state(request, game, is_host: bool = False) -> dict:
@@ -135,6 +165,12 @@ class GameView(HostRequired, TemplateView):
                            options=queued_choices(game)),
                        copy_form=CopyForm(
                            action=reverse('webadmin:game_copy', args=args),
+                           game=game),
+                       teams=teams_of(game) if game.is_active else [],
+                       team_form=TeamForm(
+                           action=reverse('webadmin:team_add', args=args)),
+                       team_copy_form=CopyTeamForm(
+                           action=reverse('webadmin:team_copy', args=args),
                            game=game),
                        answer_url=reverse('webadmin:game_answer', args=args),
                        state_url=reverse('webadmin:game_state', args=args))
@@ -324,6 +360,137 @@ class RevealRoundView(HostRequired, View):
             messages.error(request, error)
             return _back(game)
         messages.success(request, f'Round {result["index"]} revealed.')
+        return _back(game)
+
+
+class TeamView(HostRequired, View):
+    """Add a team to a game, named and optionally with its first member."""
+
+    http_method_names = ['post', 'options']
+
+    def post(self, request, *args, **kwargs):
+        game = _game(request, kwargs)
+        form = TeamForm(request.POST)
+        if not form.is_valid():
+            messages.error(request, form_errors(form))
+            return _back(game)
+        players = []
+        given = form.cleaned_data['member'].strip()
+        if given:
+            player = _named_member(request, game.guild.discord_id, given)
+            if player is None:
+                return _back(game)
+            players.append(player)
+        try:
+            team = add_team(game, _host_of(request, kwargs),
+                            form.cleaned_data['name'], players)
+        except (PermissionError, ValueError) as error:
+            messages.error(request, error)
+            return _back(game)
+        messages.success(request, f'{team.name} added to this game.')
+        return _back(game)
+
+
+class CopyTeamView(HostRequired, View):
+    """Add a team of another game to this one, with the players it had."""
+
+    http_method_names = ['post', 'options']
+
+    def post(self, request, *args, **kwargs):
+        game = _game(request, kwargs)
+        form = CopyTeamForm(request.POST, game=game)
+        if not form.is_valid():
+            messages.error(request, form_errors(form))
+            return _back(game)
+        try:
+            team = copy_team_by_pk(game, _host_of(request, kwargs),
+                                   form.cleaned_data['source'].pk)
+        except (PermissionError, ValueError) as error:
+            messages.error(request, error)
+            return _back(game)
+        messages.success(request,
+                         f'{team.name} copied into this game with its members.')
+        return _back(game)
+
+
+class TeamMemberView(HostRequired, View):
+    """Put a member in a team, or take them out of it."""
+
+    http_method_names = ['post', 'options']
+
+    def post(self, request, *args, **kwargs):
+        game = _game(request, kwargs)
+        team = _team(game, kwargs['team_pk'])
+        host = _host_of(request, kwargs)
+        leaving = request.POST.get('action') == REMOVE
+        try:
+            if leaving:
+                self._remove(request, team, host)
+            elif not self._add(request, game, team, host):
+                return _back(game)
+        except (PermissionError, ValueError) as error:
+            messages.error(request, error)
+            return _back(game)
+        messages.success(request, f'{team.name} updated.')
+        return _back(game)
+
+    def _add(self, request, game, team, host) -> bool:
+        """Put the member the form names in the team, False when it names none."""
+        form = TeamMemberForm(request.POST)
+        if not form.is_valid():
+            messages.error(request, form_errors(form))
+            return False
+        player = _named_member(request, game.guild.discord_id,
+                               form.cleaned_data['member'])
+        if player is None:
+            return False
+        assign_player(team, host, player)
+        return True
+
+    def _remove(self, request, team, host) -> None:
+        """Take the player the posted key names out of the team."""
+        player = team.players.filter(pk=request.POST.get('player', '')).first()
+        if player is None:
+            raise ValueError(_('This player does not answer for this team.'))
+        remove_player(team, host, player)
+
+
+class RenameTeamView(HostRequired, View):
+    """Give a team another name."""
+
+    http_method_names = ['post', 'options']
+
+    def post(self, request, *args, **kwargs):
+        game = _game(request, kwargs)
+        form = RenameTeamForm(request.POST)
+        if not form.is_valid():
+            messages.error(request, form_errors(form))
+            return _back(game)
+        try:
+            team = rename_team(_team(game, kwargs['team_pk']),
+                               _host_of(request, kwargs),
+                               form.cleaned_data['name'])
+        except (PermissionError, ValueError) as error:
+            messages.error(request, error)
+            return _back(game)
+        messages.success(request, f'The team is now {team.name}.')
+        return _back(game)
+
+
+class RemoveTeamView(HostRequired, View):
+    """Remove a team that has not scored yet."""
+
+    http_method_names = ['post', 'options']
+
+    def post(self, request, *args, **kwargs):
+        game = _game(request, kwargs)
+        team = _team(game, kwargs['team_pk'])
+        try:
+            remove_team(team, _host_of(request, kwargs))
+        except (PermissionError, ValueError) as error:
+            messages.error(request, error)
+            return _back(game)
+        messages.success(request, f'{team.name} removed.')
         return _back(game)
 
 

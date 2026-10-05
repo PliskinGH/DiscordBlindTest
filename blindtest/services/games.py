@@ -23,6 +23,7 @@ from .library import question_choices, question_line
 from .rounds import (create_round, current_round, queued_count,
                      require_visible, reveal_round, round_answers)
 from .scores import _scored_rounds, game_scores, game_team_scores
+from .teams import has_teams, teams_of
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +144,8 @@ def recap_payload(game: Game, rounds: Iterable[Round] | None = None) -> dict:
     return {'game_id': game.pk, 'game_name': game.display_name,
             'type_label': QuizType(game.type).display_name,
             'scoring_label': ScoringMode(game.scoring_mode).display_name,
-            'scores': game_scores(game, rounds),
-            'teams': game_team_scores(game, rounds),
+            'player_scores': game_scores(game, rounds),
+            'team_scores': game_team_scores(game, rounds),
             'rounds': len(rounds),
             'answers': sum(len(round_.guesses.all()) for round_ in rounds),
             'finished_at': game.finished_at,
@@ -316,9 +317,10 @@ def control_state(game: Game, player: Player | None = None) -> dict:
     """
     round_ = current_round(game)
     rounds = _scored_rounds(game)
+    has_teams = bool(teams_of(game))
     state = {**game_summary(game), 'game_pk': game.pk, 'state': game.state,
              'state_label': game.state_label, 'queued': queued_count(game),
-             'rounds': len(rounds), 'has_teams': game.teams.exists(),
+             'rounds': len(rounds), 'has_teams': has_teams,
              'can_publish': game.is_preparing,
              'can_round': game.is_running,
              'can_next': (game.is_running
@@ -326,8 +328,8 @@ def control_state(game: Game, player: Player | None = None) -> dict:
              'can_reveal': round_ is not None and round_.is_active,
              'can_queue': game.is_active,
              'can_end': game.state != Game.State.FINISHED}
-    standings = {'scores': game_scores(game, rounds),
-                 'teams': game_team_scores(game, rounds)
+    standings = {'player_scores': game_scores(game, rounds),
+                 'team_scores': game_team_scores(game, rounds)
                  if state['has_teams'] else []}
     if round_ is None:
         return {**state, 'round': None, **standings}

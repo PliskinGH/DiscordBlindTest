@@ -64,6 +64,13 @@ python manage.py test         # test suite
 | `/quiz next` | Open the next round: the queued question or a drawn one (hosts only) |
 | `/quiz reveal` | Reveal the current round and publish the standings (hosts only) |
 | `/quiz end` | End the game of this server, revealing the round left open before the final scores. A game still being prepared closes without a recap (hosts only) |
+| `/teams add` | Create a team of the running game, optionally with its first member (hosts only) |
+| `/teams copy` | Add a team of a game this server played before to the running game, with its members (hosts only) |
+| `/teams members add` | Put a member in a team (hosts only) |
+| `/teams members remove` | Take a member out of a team (hosts only) |
+| `/teams rename` | Give a team another name (hosts only) |
+| `/teams remove` | Remove a team that has not scored yet (hosts only) |
+| `/teams list` | Show the teams of the running game and who answers in them (hosts only) |
 | `/admin host add` | Allow a user or a role to host (server administrators) |
 | `/admin host remove` | Withdraw host rights (server administrators) |
 | `/admin host list` | Show the hosts of this server (server administrators) |
@@ -120,6 +127,10 @@ python manage.py test         # test suite
   - The slash commands and their controls post the broadcast they just recorded.
   - A caller without a connection (see [Web admin](#web-admin) section) records it only, and the bot posts it on its next pass.
   - Every broadcast is made exactly once, whichever client claims it first.
+
+- A guess counts for the team its player was in when they answered, if it exists.
+  - Teams can be changed while a game runs (`/teams` commands).
+  - A team of an earlier game can be copied over with its members.
 
 - Questions and answers belong to a server, or to the global library when their guild is empty:
   - The global library is defined in the Django admin only.
@@ -186,3 +197,5 @@ The web process offers an alternative interface (mainly for hosts, but can also 
   - The live parts of the control room and of the answer page follow the game with [htmx](https://htmx.org): the round, the number of answers and the standings update by themselves, so an answer given in Discord shows up without reloading.
   - The control room lists the recent broadcasts of its game, and a broadcast that failed can be posted again.
   - Questions to queue and games to copy from are searched server-side. The search needs a cache shared by every process that serves the web admin: set `REDIS_URL` in production, since the in-memory cache of a single worker will not answer a search another worker is asked for.
+  - The **Teams** panel creates, renames, populates and removes the teams of the game, and copies teams of earlier games.
+

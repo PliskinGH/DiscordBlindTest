@@ -67,6 +67,11 @@ def forget_answer_forms(answer: Answer) -> None:
     forget(scoped('bt:forms', guild_scope(answer.guild_id)))
 
 
+def teams_key(game: Game) -> str:
+    """Return the key of the teams of a game, with the players in them."""
+    return scoped('bt:teams', game_scope(game.pk))
+
+
 def active_game_key(guild: Guild) -> str:
     """Return the key of the game a guild is playing."""
     return scoped('bt:active', guild_scope(guild.pk))

@@ -219,7 +219,7 @@ def scores_embed(payload: dict, suffix: str, lead: str,
     """Return a scoreboard: a leader callout, the standings and a footer."""
     embed = discord.Embed(title=title(payload, suffix), description=lead,
                           colour=colour, timestamp=payload.get('finished_at'))
-    lines, left = score_lines(payload['scores'][:MAX_LISTED_PLAYERS],
+    lines, left = score_lines(payload['player_scores'][:MAX_LISTED_PLAYERS],
                               FIELD_VALUE_LIMIT - RESERVE)
     if lines:
         embed.add_field(name='Standings', value=block(lines, left), inline=False)
@@ -232,13 +232,13 @@ def scores_embed(payload: dict, suffix: str, lead: str,
 def recap_embed(payload: dict) -> discord.Embed:
     """Return the final scores and the summary of a finished game."""
     fields = []
-    if payload['teams']:
-        team_lines, teams_left = score_lines(payload['teams'],
+    if payload['team_scores']:
+        team_lines, teams_left = score_lines(payload['team_scores'],
                                              FIELD_VALUE_LIMIT - RESERVE)
         fields.append(('Teams', block(team_lines, teams_left, 'teams'), False))
     fields += [('Rounds played', str(payload['rounds']), True),
                ('Answers given', str(payload['answers']), True),
                ('Quiz type', payload['type_label'], True)]
     return scores_embed(payload, 'final scores',
-                        leader_line(payload['scores'], 'wins'),
+                        leader_line(payload['player_scores'], 'wins'),
                         colour=FINISHED, fields=fields)

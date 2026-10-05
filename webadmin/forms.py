@@ -9,12 +9,14 @@ from django.utils.translation import gettext_lazy as _
 from django_select2 import forms as select2_forms
 
 from blindtest.constants import MAX_CHOICES, MAX_YEAR
-from blindtest.models import Game, Question, QuizType, ScoringMode
+from blindtest.models import Game, Question, QuizType, ScoringMode, Team
 from blindtest.services.games import (copyable_games, create_game,
                                       game_option)
 from blindtest.services.guessing import submit_guess
 from blindtest.services.library import (add_question, edit_question, question_line,
                                         queueable_questions, split_answers)
+from blindtest.services.teams import (copyable_team_option,
+                                      copyable_team_queryset)
 
 QUESTION_SEARCH_FIELDS = ['prompt__icontains',
                           'expected_answer__text__icontains',
@@ -45,6 +47,20 @@ class QuestionWidget(FullWidthWidgetMixin, select2_forms.ModelSelect2MultipleWid
     def label_from_instance(self, question: Question) -> str:
         """Return the question as the host picks it, answer included."""
         return question_line(question, with_answer=True)
+
+
+TEAM_SEARCH_FIELDS = ['name__icontains', 'game__name__icontains']
+"""The lookups the picker of teams searches, as the Discord one does."""
+
+
+class TeamWidget(FullWidthWidgetMixin, select2_forms.ModelSelect2Widget):
+    """A picker asking the server for the teams a host may copy."""
+
+    search_fields = TEAM_SEARCH_FIELDS
+
+    def label_from_instance(self, team: Team) -> str:
+        """Return the team as the host picks it, with the game it played in."""
+        return copyable_team_option(team)
 
 
 class GameWidget(FullWidthWidgetMixin, select2_forms.ModelSelect2Widget):
@@ -241,6 +257,67 @@ class HostUserForm(BootstrapForm):
         label=_('Member'), max_length=100,
         help_text=_('A user mention (<@123456789>), or the name of somebody '
                     'in this server.'))
+
+
+class TeamForm(BootstrapForm):
+    """A team to create, named and optionally with its first member."""
+
+    submit_label = _('Add the team')
+    auto_id_prefix = 'team'
+
+    name = forms.CharField(label=_('Team name'), max_length=100)
+
+    member = forms.CharField(
+        label=_('First member'), max_length=100, required=False,
+        help_text=_('A user mention (<@123456789>), or the name of '
+                    'somebody in this server.'))
+
+
+class CopyTeamForm(BootstrapForm):
+    """A team copied over from a game this server played before.
+
+    The target is the game of the page, so the only thing to pick is the team to
+    copy: the games are searchable as well as the team names.
+    """
+
+    submit_label = _('Copy the team')
+    auto_id_prefix = 'copy_team'
+
+    source = forms.ModelChoiceField(
+        label=_('Copy from'), queryset=Team.objects.none(),
+        widget=TeamWidget(
+            attrs={'data-placeholder': _('Search a team')}))
+
+    def __init__(self, *args, game=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        if game is not None:
+            teams = copyable_team_queryset(game.guild, game)
+            self.fields['source'].queryset = teams
+            self.fields['source'].widget.queryset = teams
+            self.fields['source'].widget.data_url = reverse(
+                'webadmin:game_search',
+                args=[game.guild.discord_id, game.pk])
+
+
+class TeamMemberForm(BootstrapForm):
+    """A member to add to a team, named or mentioned."""
+
+    submit_label = _('Add the member')
+    auto_id_prefix = 'team_member'
+
+    member = forms.CharField(
+        label=_('Member'), max_length=100,
+        help_text=_('A user mention (<@123456789>), or the name of '
+                    'somebody in this server.'))
+
+
+class RenameTeamForm(BootstrapForm):
+    """Another name for a team."""
+
+    submit_label = _('Rename the team')
+    auto_id_prefix = 'rename_team'
+
+    name = forms.CharField(label=_('Team name'), max_length=100)
 
 
 class ChannelForm(PickerForm):

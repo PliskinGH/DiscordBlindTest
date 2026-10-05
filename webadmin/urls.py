@@ -60,6 +60,17 @@ urlpatterns = [
          games.RevealRoundView.as_view(), name='game_reveal'),
     path('g/<int:discord_guild_id>/games/<int:game_pk>/end/',
          games.EndGameView.as_view(), name='game_end'),
+    # The teams of a game, which its hosts fill before and during the game.
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/teams/',
+         games.TeamView.as_view(), name='team_add'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/teams/copy/',
+         games.CopyTeamView.as_view(), name='team_copy'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/teams/<int:team_pk>/',
+         games.TeamMemberView.as_view(), name='team_member'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/teams/<int:team_pk>/name/',
+         games.RenameTeamView.as_view(), name='team_rename'),
+    path('g/<int:discord_guild_id>/games/<int:game_pk>/teams/<int:team_pk>/remove/',
+         games.RemoveTeamView.as_view(), name='team_remove'),
     path('g/<int:discord_guild_id>/games/<int:game_pk>/answer/',
          games.AnswerView.as_view(), name='game_answer'),
     # The settings of a server are managed by its administrators.

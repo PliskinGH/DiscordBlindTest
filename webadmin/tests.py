@@ -1,6 +1,7 @@
 """Tests for the web admin's Discord login and landing pages."""
 
 import re
+import requests
 from unittest import mock
 
 from django.core.cache import cache
@@ -10,6 +11,7 @@ from django.urls import reverse
 from blindtest import constants
 from blindtest.models import (Broadcast, Game, Guess, Question, QuizType,
                               ScoringMode)
+from discordblindtest.testing import NetworkAccessDenied, NoNetworkMixin
 from discordcore.members import LocalMember, LocalPermissions, LocalRole
 from discordcore.models import Guild, Host, Player
 from blindtest.services.broadcasts import (claim_broadcast, post_game_end,
@@ -19,10 +21,12 @@ from blindtest.services.broadcasts import (claim_broadcast, post_game_end,
                                            pending_broadcasts,
                                            unfinished_broadcasts)
 from blindtest.services.games import (active_game, control_state, create_game,
-                                      played_game, queue_questions)
+                                      end_game, played_game,
+                                      queue_questions)
 from blindtest.services.guessing import guess_of, submit_guess
 from blindtest.services.guilds import is_host
 from blindtest.services.rounds import current_round, round_answers
+from blindtest.services.teams import add_team
 
 from . import discord_api, forms
 
@@ -35,8 +39,12 @@ IDENTITY = {'account': ACCOUNT, 'guilds': GUILDS}
 WENDY = {'user': {'id': '42', 'username': 'wendy'}, 'nick': 'Wendy'}
 
 
-class CacheTestCase(TestCase):
-    """A test that starts from an empty cache, which outlives a rolled back row."""
+class CacheTestCase(NoNetworkMixin, TestCase):
+    """A test that starts from an empty cache, which outlives a rolled back row.
+
+    It also inherits the shared block on the network, so a test that forgets to
+    mock a Discord read fails here instead of calling the real API.
+    """
 
     def setUp(self):
         super().setUp()
@@ -59,10 +67,12 @@ class LoginTests(CacheTestCase):
         session[discord_api.STATE_SESSION_KEY] = 'state-1'
         session.save()
         with mock.patch.object(discord_api, 'fetch_discord_identity',
-                               return_value=IDENTITY):
+                               return_value=IDENTITY), \
+                mock.patch.object(discord_api, 'fetch_bot_guild_ids',
+                                  return_value=set()):
             response = self.client.get(reverse('webadmin:discord_callback'),
                                        {'code': 'abc', 'state': 'state-1'})
-        self.assertRedirects(response, reverse('webadmin:dashboard'))
+            self.assertRedirects(response, reverse('webadmin:dashboard'))
         player = Player.objects.get(discord_user_id=42)
         self.assertEqual(player.discord_name, 'hostie')
         self.assertEqual(self.client.session['_auth_user_id'], str(player.pk))
@@ -87,6 +97,12 @@ class LoginTests(CacheTestCase):
 
 class LoginPageTests(CacheTestCase):
     """The login page is the only public page."""
+
+    def test_the_guard_catches_a_forgotten_mock(self):
+        """The network is blocked, so a forgotten mock fails loudly."""
+        with self.assertRaises(NetworkAccessDenied):
+            requests.get('https://discord.com/api/v10/users/@me')
+
 
     def test_login_page_is_public(self):
         response = self.client.get(reverse('webadmin:login'))
@@ -730,7 +746,8 @@ class GameControlTests(CacheTestCase):
         for name, given in (('fetch_bot_channels',
                              [{'id': 555, 'label': '#quiz-lounge'}]),
                             ('fetch_bot_roles',
-                             [{'id': 99, 'label': '@Quizmaster'}])):
+                             [{'id': 99, 'label': '@Quizmaster'}]),
+                            ('fetch_member_roles', [])):
             patcher = mock.patch(f'webadmin.discord_api.{name}',
                                  return_value=given)
             patcher.start()
@@ -768,6 +785,261 @@ class GameControlTests(CacheTestCase):
     def _url(self, name, *args) -> str:
         """Return a control room route of this server."""
         return reverse(f'webadmin:{name}', args=[7, *args])
+
+    def _member_by_id(self, discord_user_id: int, name: str) -> Player:
+        """Register the player a Discord member lookup resolves to."""
+        return Player.objects.create_user(
+            username=name + str(discord_user_id),
+            email=name + str(discord_user_id) + '@example.com',
+            discord_user_id=discord_user_id, discord_name=name)
+
+
+    @mock.patch('webadmin.discord_api.fetch_bot_member')
+    def test_a_host_creates_a_team_with_its_first_member(self, member):
+        guest = self._member_by_id(77, 'Wendy')
+        member.return_value = {'id': 77, 'label': 'Wendy',
+                               'name': 'wendy', 'mention': '<@77>'}
+        game = self._game()
+        response = self.client.post(self._url('team_add', game.pk),
+                                    {'name': 'Reds', 'member': 'Wendy'},
+                                    follow=True)
+        self.assertContains(response, 'Reds added to this game.')
+        self.assertEqual(list(game.teams.get().players.all()), [guest])
+
+    @mock.patch('webadmin.discord_api.fetch_bot_member')
+    def test_a_host_creates_an_empty_team(self, member):
+        game = self._game()
+        self.client.post(self._url('team_add', game.pk), {'name': 'Blues'})
+        self.assertEqual([team.name for team in game.teams.all()],
+                         ['Blues'])
+        member.assert_not_called()
+
+    @mock.patch('webadmin.discord_api.fetch_bot_member')
+    def test_a_host_pastes_a_member_mention(self, member):
+        self._member_by_id(77, 'Wendy')
+        game = self._game()
+        self.client.post(self._url('team_add', game.pk),
+                         {'name': 'Reds', 'member': '<@77>'})
+        self.assertEqual(len(game.teams.get().players.all()), 1)
+        member.assert_not_called()
+
+    @mock.patch('webadmin.discord_api.fetch_bot_member', return_value=None)
+    def test_a_host_names_nobody_at_all(self, member):
+        game = self._game()
+        response = self.client.post(self._url('team_add', game.pk),
+                                    {'name': 'Reds', 'member': 'Nobody'},
+                                    follow=True)
+        self.assertContains(response, 'No member named')
+        self.assertEqual(game.teams.count(), 0)
+
+    @mock.patch('webadmin.discord_api.fetch_bot_member')
+    def test_a_discord_that_cannot_be_reached_is_reported(self, member):
+        member.side_effect = requests.RequestException
+        game = self._game()
+        response = self.client.post(self._url('team_add', game.pk),
+                                    {'name': 'Reds', 'member': 'Wendy'},
+                                    follow=True)
+        self.assertContains(response, 'Discord could not be reached')
+        self.assertEqual(game.teams.count(), 0)
+
+    def test_a_duplicated_team_name_is_refused(self):
+        game = self._game()
+        self.client.post(self._url('team_add', game.pk), {'name': 'Reds'})
+        response = self.client.post(self._url('team_add', game.pk),
+                                    {'name': 'reds'}, follow=True)
+        self.assertContains(response, 'already has a team called')
+        self.assertEqual(game.teams.count(), 1)
+
+    @mock.patch('webadmin.discord_api.fetch_bot_member')
+    def test_a_host_puts_a_member_in_a_team(self, member):
+        self._member_by_id(77, 'Wendy')
+        member.return_value = {'id': 77, 'label': 'Wendy',
+                               'name': 'wendy', 'mention': '<@77>'}
+        game = self._game()
+        team = add_team(game, self.member, 'Reds')
+        self.client.post(self._url('team_member', game.pk, team.pk),
+                         {'member': 'Wendy'})
+        self.assertEqual(len(team.players.all()), 1)
+
+    def test_a_host_takes_a_member_out_of_a_team(self):
+        game = self._game()
+        team = add_team(game, self.member, 'Reds', [self.guest])
+        self.client.post(self._url('team_member', game.pk, team.pk),
+                         {'action': 'remove', 'player': self.guest.pk})
+        self.assertEqual(list(team.players.all()), [])
+
+    def test_a_host_renames_a_team(self):
+        game = self._game()
+        team = add_team(game, self.member, 'Reds')
+        self.client.post(self._url('team_rename', game.pk, team.pk),
+                         {'name': 'Crimson'})
+        team.refresh_from_db()
+        self.assertEqual(team.name, 'Crimson')
+
+    def test_a_host_removes_a_team(self):
+        game = self._game()
+        team = add_team(game, self.member, 'Reds')
+        self.client.post(self._url('team_remove', game.pk, team.pk))
+        self.assertEqual(game.teams.count(), 0)
+
+    def test_a_team_of_another_game_is_not_reachable(self):
+        ended, other = self._ended_game_with_a_team()
+        game = self._game()
+        add_team(game, self.member, 'Reds')
+        response = self.client.post(self._url('team_remove', game.pk, other.pk))
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(ended.teams.count(), 1)
+
+    def _ended_game_with_a_team(self):
+        """Return an ended game of this server and one of its teams."""
+        ended = create_game(self.guild, 555, self.member,
+                            state=Game.State.SETUP)
+        team = add_team(ended, self.member, 'Blues')
+        end_game(ended, self.member)
+        return ended, team
+
+    def _team_of_another_server(self):
+        """Return a team of a server the session may not reach."""
+        other = self._other_guild()
+        Host.objects.get_or_create(guild=other, mention='<@42>')
+        return add_team(create_game(other, 555, self.member), self.member,
+                        'Reds')
+
+    def test_the_teams_of_a_finished_game_are_frozen(self):
+        game = self._game()
+        add_team(game, self.member, 'Reds')
+        end_game(game, self.member)
+        response = self.client.post(self._url('team_add', game.pk),
+                                    {'name': 'Blues'}, follow=True)
+        self.assertContains(response, 'This game is over')
+        self.assertEqual(game.teams.count(), 1)
+
+    def test_a_stranger_does_not_manage_the_teams(self):
+        game = self._game()
+        team = add_team(game, self.member, 'Reds')
+        self._as_guest()
+        posts = [(self._url('team_add', game.pk), {}),
+                 (self._url('team_member', game.pk, team.pk), {}),
+                 (self._url('team_rename', game.pk, team.pk), {'name': 'X'}),
+                 (self._url('team_remove', game.pk, team.pk), {})]
+        for url, data in posts:
+            with self.subTest(url=url):
+                response = self.client.post(url, data)
+                self.assertEqual(response.status_code, 403)
+
+    def test_the_control_room_lists_the_teams_with_their_members(self):
+        game = self._game()
+        add_team(game, self.member, 'Reds', [self.guest])
+        add_team(game, self.member, 'Blues')
+        response = self.client.get(self._url('game', game.pk))
+        self.assertContains(response, 'Reds')
+        self.assertContains(response, 'guestie')
+        self.assertContains(response, 'Nobody answers for this team yet.')
+
+    def test_a_host_copies_a_team_of_another_game_with_its_members(self):
+        past = self._ended_game_with_a_team()[1]
+        game = self._game()
+        response = self.client.post(self._url('team_copy', game.pk),
+                                    {'source': past.pk}, follow=True)
+        self.assertContains(response, 'Blues copied into this game')
+        copied = game.teams.get()
+        self.assertEqual(copied.name, 'Blues')
+        self.assertEqual(list(copied.players.all()), [])
+
+    def test_a_copied_team_brings_the_members_of_the_original(self):
+        past = self._ended_game_with_a_team()[1]
+        past.players.add(self.guest)
+        game = self._game()
+        self.client.post(self._url('team_copy', game.pk), {'source': past.pk})
+        self.assertEqual(list(game.teams.get().players.all()), [self.guest])
+
+    def test_a_game_refuses_to_copy_a_team_it_already_has(self):
+        past = self._ended_game_with_a_team()[1]
+        game = self._game()
+        add_team(game, self.member, 'Blues')
+        response = self.client.post(self._url('team_copy', game.pk),
+                                    {'source': past.pk}, follow=True)
+        self.assertContains(response, 'already has a team called')
+        self.assertEqual(game.teams.count(), 1)
+
+    def test_a_game_refuses_to_copy_one_of_its_own_teams(self):
+        game = self._game()
+        team = add_team(game, self.member, 'Reds')
+        response = self.client.post(self._url('team_copy', game.pk),
+                                    {'source': team.pk}, follow=True)
+        self.assertContains(response, 'Select a valid choice')
+        self.assertEqual(game.teams.count(), 1)
+
+    def test_a_game_refuses_to_copy_a_team_of_another_server(self):
+        game = self._game()
+        other = self._team_of_another_server()
+        response = self.client.post(self._url('team_copy', game.pk),
+                                    {'source': other.pk}, follow=True)
+        self.assertContains(response, 'Select a valid choice')
+        self.assertEqual(game.teams.count(), 0)
+
+    def test_a_finished_game_does_not_take_a_copied_team(self):
+        past = self._ended_game_with_a_team()[1]
+        game = self._game()
+        end_game(game, self.member)
+        response = self.client.post(self._url('team_copy', game.pk),
+                                    {'source': past.pk}, follow=True)
+        self.assertContains(response, 'This game is over')
+        self.assertEqual(game.teams.count(), 0)
+
+    def test_a_stranger_does_not_copy_a_team(self):
+        past = self._ended_game_with_a_team()[1]
+        game = self._game()
+        self._as_guest()
+        response = self.client.post(self._url('team_copy', game.pk),
+                                    {'source': past.pk})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(game.teams.count(), 0)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_copy_picker_searches_the_teams_of_the_other_games(self, roles):
+        past = self._ended_game_with_a_team()[1]
+        game = self._game()
+        add_team(game, self.member, 'Reds')
+        page = self.client.get(self._url('game', game.pk))
+        field = self._field_id(page, 'copy_team_source')
+        results = self._search(game, field, 'Blues').json()['results']
+        self.assertEqual([row['id'] for row in results], [past.pk])
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_copy_picker_never_offers_a_team_of_the_game_itself(self, roles):
+        self._ended_game_with_a_team()
+        game = self._game()
+        add_team(game, self.member, 'Reds')
+        page = self.client.get(self._url('game', game.pk))
+        field = self._field_id(page, 'copy_team_source')
+        results = self._search(game, field, 'Reds').json()['results']
+        self.assertEqual(results, [])
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_copy_picker_is_searched_by_the_game_a_team_played_in(self, roles):
+        past = self._ended_game_with_a_team()[1]
+        past.game.name = 'Friday quiz'
+        past.game.save(update_fields=['name'])
+        game = self._game()
+        page = self.client.get(self._url('game', game.pk))
+        results = self._search(game, self._field_id(page, 'copy_team_source'),
+                               'Friday').json()['results']
+        self.assertEqual([row['id'] for row in results], [past.pk])
+        self.assertIn('Friday quiz — Blues', results[0]['text'])
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_copy_picker_never_offers_a_team_of_another_server(self, roles):
+        game = self._game()
+        self._team_of_another_server()
+        page = self.client.get(self._url('game', game.pk))
+        results = self._search(game, self._field_id(page, 'copy_team_source'),
+                               'Reds').json()['results']
+        self.assertEqual(results, [])
+
+    def test_the_control_room_says_when_a_game_has_no_team(self):
+        response = self.client.get(self._url('game', self._game().pk))
+        self.assertContains(response, 'No team yet')
 
     def _as_guest(self) -> None:
         """Log in as a member of the server who holds no host rights."""
@@ -1201,7 +1473,7 @@ class GameControlTests(CacheTestCase):
         # The page polls every two seconds, so its read must stay small.
         game = self._running_round()
         self.client.get(self._url('game_state', game.pk))
-        with self.assertNumQueries(16):
+        with self.assertNumQueries(15):
             self.client.get(self._url('game_state', game.pk))
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])

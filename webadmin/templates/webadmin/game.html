@@ -1,7 +1,7 @@
 {% extends 'webadmin/base.html' %}
 {% load crispy_forms_tags %}
 {% block title %}{{ state.game_name }} — control room{% endblock %}
-{% block media %}{{ queue_form.media }}{{ copy_form.media }}{% endblock %}
+{% block media %}{{ queue_form.media }}{{ copy_form.media }}{{ team_copy_form.media }}{% endblock %}
 {% block content %}
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb">
@@ -72,6 +72,99 @@
             Remove the whole queue
           </button>
         </form>
+      </div>
+    </div>
+  </div>
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button"
+              data-bs-toggle="collapse" data-bs-target="#game-teams">
+        Teams</button>
+    </h2>
+    <div id="game-teams" class="accordion-collapse collapse"
+         data-bs-parent="#game-forms">
+      <div class="accordion-body">
+        {% if state.can_end %}
+        {% for team in teams %}
+        <div class="card mb-2">
+          <div class="card-body">
+            <h3 class="h6 mb-2 d-flex justify-content-between gap-2">
+              <span>{{ team.name }}</span>
+              <form method="post"
+                    action="{% url 'webadmin:team_remove' guild.discord_id state.game_pk team.pk %}">
+                {% csrf_token %}
+                <button class="btn btn-outline-danger btn-sm" type="submit">
+                  Remove the team
+                </button>
+              </form>
+            </h3>
+            <ul class="list-group mb-2">
+              {% for player in team.players %}
+              <li class="list-group-item d-flex justify-content-between gap-2">
+                <span>{{ player.label }}</span>
+                <form method="post"
+                      action="{% url 'webadmin:team_member' guild.discord_id state.game_pk team.pk %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="remove">
+                  <input type="hidden" name="player" value="{{ player.pk }}">
+                  <button class="btn btn-outline-danger btn-sm" type="submit">
+                    Remove
+                  </button>
+                </form>
+              </li>
+              {% empty %}
+              <li class="list-group-item text-body-secondary">
+                Nobody answers for this team yet.
+              </li>
+              {% endfor %}
+            </ul>
+            <form class="row g-2 align-items-end mb-2"
+                  method="post"
+                  action="{% url 'webadmin:team_member' guild.discord_id state.game_pk team.pk %}">
+              {% csrf_token %}
+              <div class="col-md-9">
+                <label class="form-label" for="team-add-{{ team.pk }}">
+                  Add a member
+                </label>
+                <input class="form-control" type="text" maxlength="100"
+                       name="member" id="team-add-{{ team.pk }}"
+                       placeholder="A mention or a name">
+              </div>
+              <div class="col-md-3">
+                <button class="btn btn-outline-primary" type="submit">Add</button>
+              </div>
+            </form>
+            <form class="row g-2 align-items-end"
+                  method="post"
+                  action="{% url 'webadmin:team_rename' guild.discord_id state.game_pk team.pk %}">
+              {% csrf_token %}
+              <div class="col-md-9">
+                <label class="form-label" for="team-rename-{{ team.pk }}">
+                  Rename this team
+                </label>
+                <input class="form-control" type="text" maxlength="100"
+                       name="name" id="team-rename-{{ team.pk }}"
+                       value="{{ team.name }}">
+              </div>
+              <div class="col-md-3">
+                <button class="btn btn-outline-secondary" type="submit">
+                  Rename
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+        {% empty %}
+        <p class="text-body-secondary">
+          No team yet: the points of a game are counted per player until
+          there are.
+        </p>
+        {% endfor %}
+        {% crispy team_form %}
+        {% crispy team_copy_form %}
+        {% else %}
+        <p class="text-body-secondary">This game is over.</p>
+        {% endif %}
       </div>
     </div>
   </div>

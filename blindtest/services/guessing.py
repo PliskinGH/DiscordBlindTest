@@ -1,21 +1,19 @@
-"""The answer form of a round, the guesses sent to it, the teams."""
+"""The answer form of a round, and the guesses sent to it."""
 
 
-from collections.abc import Iterable
 import logging
 
-from django.utils.translation import gettext as _ 
+from django.utils.translation import gettext as _
 from discordcore.cache import LIST_TIMEOUT, remember
-from discordcore.members import DiscordMember
 from discordcore.models import Player
 
 from .. import caching
 from .. import matching
 from ..constants import MAX_CHOICES
-from ..models import (Answer, Game, Guess, Question, QuizType, Round,
-                      ScoringMode, Team)
-from .guilds import require_host
+from ..models import (Answer, Guess, Question, QuizType, Round,
+                      ScoringMode)
 from .library import question_line
+from .teams import team_at_round
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +51,6 @@ def answer_form(display: dict) -> dict:
             'options': display['options'] if multiple_choice else []}
 
 
-def _team_for(round_: Round, player: Player) -> Team | None:
-    """Return the team of a player in the game of a round, if any."""
-    return Team.objects.filter(game_id=round_.game_id, players=player).first()
-
-
 def _answer_forms(answer: Answer | None) -> list[str]:
     """Return the comparable forms of an answer, variants included."""
     if answer is None:
@@ -93,9 +86,7 @@ def submit_guess(round_: Round, player: Player, text: str = '',
     secondary_text = secondary_text.strip()
     if not text and not secondary_text:
         raise ValueError(_("Give at least an answer."))
-    # The team is read uncached: a stale one would score a guess for the wrong
-    # team, and teams are moved between rounds.
-    team = _team_for(round_, player)
+    team = team_at_round(round_, player)
     question = (Question.objects
                 .select_related('expected_answer', 'secondary_answer')
                 .get(pk=round_.question_id))
@@ -118,35 +109,6 @@ def submit_multiple_choice(round_: Round, player: Player, choice_pk: int,
     if choice is None:
         raise ValueError(_("This choice is not offered by this round."))
     return submit_guess(round_, player, choice.text, secondary_text)
-
-
-def add_team(game: Game, host_member: DiscordMember, name: str,
-             players: Iterable[Player] = ()) -> Team:
-    """Create a team in a game, optionally with its first players."""
-    require_host(game.guild, host_member)
-    name = name.strip()
-    if not name:
-        raise ValueError(_("Give the team a name."))
-    team = Team.objects.create(game=game, name=name)
-    for player in players:
-        assign_player(team, host_member, player)
-    logger.info('Game %s: team %s created', game.pk, name)
-    return team
-
-
-def assign_player(team: Team, host_member: DiscordMember, player: Player) -> Team:
-    """Put a player in a team, moving them out of their other team of the game."""
-    require_host(team.game.guild, host_member)
-    other = team_of(team.game, player)
-    if other is not None and other.pk != team.pk:
-        other.players.remove(player)
-    team.players.add(player)
-    return team
-
-
-def team_of(game: Game, player: Player) -> Team | None:
-    """Return the team of the player in this game, if any."""
-    return player.teams.filter(game=game).first()
 
 
 def guess_of(round_: Round, player: Player) -> Guess | None:

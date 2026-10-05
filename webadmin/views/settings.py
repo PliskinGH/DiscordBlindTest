@@ -9,7 +9,7 @@ from django.views import View
 from django.views.generic import TemplateView
 
 
-from discordcore.mentions import parse_mention
+from discordcore.mentions import user_mention
 from blindtest.services.guilds import (add_host, clear_default_channel,
                                        clear_default_ping_role,
                                        default_channel_of,
@@ -43,42 +43,18 @@ def _apply(request, operation, *args) -> bool:
 
 def _mentioned_member(request, guild_id: int, name: str) -> str | None:
     """Return the mention of the member named, telling the player when none is.
-
-    A mention is taken as it stands; anything else is looked up in the server,
-    which is what makes typing a name worth doing. Either way the Discord name
-    of a member is kept, so the settings page need not ask Discord for it again.
     """
-    given = name.strip()
     try:
-        if given.startswith('<@'):
-            return _remember(guild_id, given)
-        member = discord_api.fetch_bot_member(guild_id, given)
+        member = discord_api.resolve_member(guild_id, name)
     except requests.RequestException:
         messages.error(request, _('Discord could not be reached, try again.'))
         return None
     if member is None:
         messages.error(request, _('No member named "%(name)s" in this server. '
                                   'Paste a user mention instead.')
-                       % {'name': given})
+                       % {'name': name.strip()})
         return None
-    discord_api.remember_member(member['id'], member.get('name') or '')
-    return member['mention']
-
-
-def _remember(guild_id: int, mention: str) -> str:
-    """Read the name behind a pasted user mention once, keeping it.
-
-    A role mention names no member to remember, a mention too malformed to read
-    is left for the service to refuse, and a Discord that cannot be reached is no
-    reason to withhold the host rights the administrator is granting.
-    """
-    try:
-        is_role, discord_id = parse_mention(mention)
-    except ValueError:
-        return mention
-    if not is_role:
-        discord_api.member_label(guild_id, discord_id)
-    return mention
+    return user_mention(member.discord_user_id)
 
 
 class SettingsView(AdminRequired, TemplateView):

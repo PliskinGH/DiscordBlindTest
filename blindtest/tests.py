@@ -13,6 +13,7 @@ from django.test import SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from discordblindtest.testing import NoNetworkMixin
 from discordcore.mentions import role_mention, user_mention
 from discordcore.models import Guild, Player
 
@@ -26,8 +27,8 @@ from .services.games import (clear_queue, copy_questions_by_pk,
                              create_game, end_game, game_choices,
                              panel_data, publish_game,
                              queue_questions, queued_choices)
-from .services.guessing import (add_team, answer_form, assign_player,
-                                round_display, submit_guess, team_of)
+from .services.guessing import (answer_form, round_display,
+                                submit_guess)
 from .services.guilds import (add_host, clear_default_channel,
                               clear_default_ping_role,
                               default_channel_of,
@@ -46,6 +47,10 @@ from .services.rounds import (create_round, current_round,
                               pick_question, queued_count,
                               reveal_round, open_round)
 from .services.scores import game_scores, game_team_scores
+from .services.teams import (add_team, assign_player, assign_players,
+                            copyable_teams, copy_team, copy_team_by_pk,
+                            remove_player, remove_team, rename_team,
+                            team_by_pk, team_of, teams_of)
 
 from .constants import BROADCAST_CLAIM_TIMEOUT, DEFAULT_BLIND_TEST_PROMPT
 from .models import (Answer, AnswerVariant, Broadcast, Game, Guess, Question,
@@ -85,7 +90,7 @@ class FakeMember:
         self.guild_permissions = FakePermissions(manage_guild)
 
 
-class GameTestCase(TestCase):
+class GameTestCase(NoNetworkMixin, TestCase):
     """A guild with its host, a plain player member and two questions."""
 
     def setUp(self):
@@ -173,7 +178,7 @@ class GameTests(GameTestCase):
         # The recap counts the round the ending revealed.
         self.assertEqual(result['rounds'], 1)
         self.assertEqual(result['answers'], 1)
-        self.assertEqual([score['points'] for score in result['scores']], [2])
+        self.assertEqual([score['points'] for score in result['player_scores']], [2])
 
     def test_finishing_a_game_without_an_open_round_reveals_nothing(self):
         game = self.create_game()
@@ -399,7 +404,7 @@ class RoundTests(GameTestCase):
         result = reveal_round(self.round, self.host)
         self.assertEqual(result['index'], 1)
         self.assertEqual(result['question_text'], 'Song (Band)')
-        self.assertEqual([row['points'] for row in result['scores']], [2])
+        self.assertEqual([row['points'] for row in result['player_scores']], [2])
 
     def test_the_reveal_refuses_a_second_reveal(self):
         reveal_round(self.round, self.host)
@@ -601,7 +606,7 @@ class TeamTests(GameTestCase):
 
     def test_a_team_name_is_unique_per_game(self):
         add_team(self.game, self.host, 'Reds')
-        with self.assertRaises(IntegrityError):
+        with self.assertRaises(ValueError):
             add_team(self.game, self.host, 'Reds')
 
     def test_assigning_a_player_moves_them_between_teams(self):
@@ -632,9 +637,206 @@ class TeamTests(GameTestCase):
                          [{'name': 'Reds', 'points': 0}])
         scores = game_scores(self.game)
         self.assertEqual([score['points'] for score in scores], [2])
+    def test_the_roster_lists_the_teams_with_their_players(self):
+        team = add_team(self.game, self.host, 'Reds', [self.player_row])
+        self.assertEqual(teams_of(self.game),
+                         [{'pk': team.pk, 'name': 'Reds',
+                           'players': [{'pk': self.player_row.pk,
+                                         'label': self.player_row.username}]}])
+
+    def test_the_roster_is_forgotten_when_a_team_changes(self):
+        team = add_team(self.game, self.host, 'Reds', [self.player_row])
+        assign_player(team, self.host, self.teammate)
+        self.assertEqual([row['name'] for row in teams_of(self.game)], ['Reds'])
+        self.assertEqual(len(teams_of(self.game)[0]['players']), 2)
+
+    def test_a_team_is_found_by_its_id(self):
+        team = add_team(self.game, self.host, 'Reds')
+        self.assertEqual(team_by_pk(self.game, team.pk), team)
+        self.assertEqual(team_by_pk(self.game, f' {team.pk} '), team)
+
+    def test_an_unknown_team_id_is_refused(self):
+        with self.assertRaises(ValueError):
+            team_by_pk(self.game, 9999)
+
+    def test_a_name_is_not_a_team_id(self):
+        add_team(self.game, self.host, 'Reds')
+        with self.assertRaises(ValueError):
+            team_by_pk(self.game, 'Reds')
+
+    def test_a_team_of_another_game_is_not_found(self):
+        other = self._played_team('Blues')
+        with self.assertRaises(ValueError):
+            team_by_pk(self.create_game(), other.pk)
+
+    def test_only_hosts_rename_or_remove_a_team(self):
+        team = add_team(self.game, self.host, 'Reds')
+        with self.assertRaises(PermissionError):
+            rename_team(team, self.player, 'Blues')
+        with self.assertRaises(PermissionError):
+            remove_team(team, self.player)
+
+    def test_a_team_name_is_refused_in_another_case(self):
+        add_team(self.game, self.host, 'Reds')
+        with self.assertRaises(ValueError):
+            add_team(self.game, self.host, ' reds ')
+
+    def test_renaming_a_team_keeps_its_own_name(self):
+        team = add_team(self.game, self.host, 'Reds')
+        rename_team(team, self.host, 'reds ')
+        self.assertEqual(team_by_pk(self.game, team.pk).name, 'reds')
+
+    def test_renaming_onto_another_name_is_refused(self):
+        add_team(self.game, self.host, 'Reds')
+        blues = add_team(self.game, self.host, 'Blues')
+        with self.assertRaises(ValueError):
+            rename_team(blues, self.host, 'reds')
+
+    def test_a_player_leaves_a_team(self):
+        team = add_team(self.game, self.host, 'Reds', [self.player_row])
+        remove_player(team, self.host, self.player_row)
+        self.assertIsNone(team_of(self.game, self.player_row))
+
+    def test_removing_a_player_outside_the_team_is_refused(self):
+        team = add_team(self.game, self.host, 'Reds')
+        with self.assertRaises(ValueError):
+            remove_player(team, self.host, self.player_row)
+
+    def test_several_players_join_a_team_at_once(self):
+        team = add_team(self.game, self.host, 'Reds')
+        assign_players(team, self.host, [self.player_row, self.teammate])
+        self.assertEqual(len(team.players.all()), 2)
+
+    def test_a_team_that_scored_is_kept(self):
+        team = add_team(self.game, self.host, 'Reds', [self.player_row])
+        submit_guess(self.round, self.player_row, 'Song', 'Band')
+        with self.assertRaises(ValueError):
+            remove_team(team, self.host)
+        self.assertEqual(team_by_pk(self.game, team.pk).name, 'Reds')
+
+    def test_a_team_without_guesses_is_removed(self):
+        team = add_team(self.game, self.host, 'Reds')
+        remove_team(team, self.host)
+        self.assertEqual(teams_of(self.game), [])
+
+    def test_the_teams_of_a_finished_game_are_frozen(self):
+        team = add_team(self.game, self.host, 'Reds')
+        end_game(self.game, self.host)
+        self.game.refresh_from_db()
+        team.refresh_from_db()
+        for refused in (lambda: add_team(self.game, self.host, 'Blues'),
+                       lambda: rename_team(team, self.host, 'Blues'),
+                       lambda: remove_team(team, self.host),
+                       lambda: assign_player(team, self.host, self.teammate),
+                       lambda: assign_players(team, self.host, [self.teammate]),
+                       lambda: remove_player(team, self.host, self.player_row)):
+            with self.subTest(refused=refused):
+                with self.assertRaises(ValueError):
+                    refused()
+
+    def test_a_team_is_copied_with_its_players_into_another_game(self):
+        source = self._played_team('Reds', [self.player_row, self.teammate])
+        game = self.create_game()
+        copied = copy_team(game, self.host, source)
+        self.assertEqual(copied.name, 'Reds')
+        self.assertEqual(list(copied.players.all()),
+                         [self.player_row, self.teammate])
+        self.assertEqual(list(source.players.all()),
+                         [self.player_row, self.teammate])
+
+    def test_a_copy_is_refused_a_name_the_game_already_has(self):
+        source = self._played_team('Reds')
+        game = self.create_game()
+        add_team(game, self.host, 'Reds')
+        with self.assertRaises(ValueError):
+            copy_team(game, self.host, source)
+        self.assertEqual(game.teams.count(), 1)
+
+    def test_copying_a_team_of_the_game_itself_is_refused(self):
+        source = add_team(self.game, self.host, 'Reds')
+        with self.assertRaises(ValueError):
+            copy_team(self.game, self.host, source)
+
+    def test_copying_a_team_of_another_server_is_refused(self):
+        add_host(self.other_guild, user_mention(self.host.id), self.admin)
+        source = add_team(self.create_game(self.other_guild), self.host, 'Reds')
+        with self.assertRaises(ValueError):
+            copy_team(self.game, self.host, source)
+
+    def test_only_hosts_copy_a_team(self):
+        source = self._played_team('Reds')
+        game = self.create_game()
+        with self.assertRaises(PermissionError):
+            copy_team(game, self.player, source)
+
+    def test_a_finished_game_takes_no_copied_team(self):
+        source = self._played_team('Reds')
+        game = self.create_game()
+        end_game(game, self.host)
+        with self.assertRaises(ValueError):
+            copy_team(game, self.host, source)
+
+    def test_a_team_that_vanished_is_reported(self):
+        with self.assertRaises(ValueError):
+            copy_team_by_pk(self.game, self.host, 999)
+
+    def test_the_teams_to_copy_are_those_of_the_other_games(self):
+        source = self._played_team('Reds')
+        game = self.create_game()
+        add_team(game, self.host, 'Blues')
+        self.assertEqual([choice['pk']
+                          for choice in copyable_teams(self.guild, game)],
+                         [source.pk])
+
+    def test_the_teams_to_copy_are_named_after_the_game_they_played_in(self):
+        past = self.game
+        past.name = 'Friday quiz'
+        past.save(update_fields=['name'])
+        self._played_team('Reds')
+        self.assertEqual(copyable_teams(self.guild, self.create_game())[0]
+                         ['label'], 'Friday quiz — Reds')
+
+    def test_the_teams_to_copy_are_searched_by_game_and_by_name(self):
+        past = self.game
+        past.name = 'Friday quiz'
+        past.save(update_fields=['name'])
+        add_team(past, self.host, 'Reds')
+        add_team(past, self.host, 'Blues')
+        end_game(past, self.host)
+        game = self.create_game()
+        for term, names in (('Red', ['Reds']), ('Friday', ['Blues', 'Reds']),
+                            ('blues', ['Blues'])):
+            with self.subTest(term=term):
+                labels = [choice['label'] for choice in
+                          copyable_teams(self.guild, game, term)]
+                self.assertEqual(sorted(label.rsplit(' — ', 1)[1]
+                                        for label in labels), names)
+
+    def test_the_teams_of_another_server_are_never_offered_to_copy(self):
+        add_host(self.other_guild, user_mention(self.host.id), self.admin)
+        add_team(self.create_game(self.other_guild), self.host, 'Reds')
+        self.assertEqual(copyable_teams(self.guild, self.game), [])
+
+    def _played_team(self, name: str,
+                     players: list = ()) -> Team:
+        """Return a team of a game of this server that has been played and ended.
+
+        The game this test case is already playing is the one that ends, so the
+        tests after it start from a server with no game running.
+        """
+        team = add_team(self.game, self.host, name, players)
+        end_game(self.game, self.host)
+        self.game.refresh_from_db()
+        return team
+
+    def test_the_permission_is_checked_before_the_game_state(self):
+        end_game(self.game, self.host)
+        self.game.refresh_from_db()
+        with self.assertRaises(PermissionError):
+            add_team(self.game, self.player, 'Reds')
 
 
-class MatchingTests(SimpleTestCase):
+class MatchingTests(NoNetworkMixin, SimpleTestCase):
     def test_normalize_folds_case_accents_and_punctuation(self):
         self.assertEqual(matching.normalize('Écoute, Bébé!'), 'ecoute bebe')
 
@@ -1359,7 +1561,7 @@ class QuizTypeTests(GameTestCase):
         self.assertEqual(recap['rounds'], 1)
         self.assertEqual(recap['answers'], 1)
         self.assertEqual(recap['game_name'], self.game.display_name)
-        self.assertEqual([row['points'] for row in recap['scores']], [2])
+        self.assertEqual([row['points'] for row in recap['player_scores']], [2])
 
     def test_a_queued_question_is_not_a_round_played(self):
         round_ = Round.objects.get(
@@ -1370,7 +1572,7 @@ class QuizTypeTests(GameTestCase):
         recap = end_game(self.game, self.host)
         self.assertEqual(recap['rounds'], 1)
         self.assertEqual(recap['answers'], 1)
-        self.assertEqual([row['points'] for row in recap['scores']], [2])
+        self.assertEqual([row['points'] for row in recap['player_scores']], [2])
 
     def test_a_round_edited_in_the_admin_is_validated(self):
         round_ = Round.objects.get(

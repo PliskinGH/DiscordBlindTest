@@ -47,8 +47,12 @@ class BlindTestBot(commands.Bot):
     async def sync_commands(self) -> None:
         """Publish the slash commands, to the test guilds first when configured."""
         if not settings.TEST_GUILD_IDS:
-            synced = await self.tree.sync()
-            logger.info('Synced %s slash commands globally', len(synced))
+            try:
+                synced = await self.tree.sync()
+            except discord.HTTPException as error:
+                logger.warning('Could not sync commands globally: %s', error)
+            else:
+                logger.info('Synced %s slash commands globally', len(synced))
             return
         for guild_id in settings.TEST_GUILD_IDS:
             guild = discord.Object(id=int(guild_id))

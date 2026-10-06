@@ -48,12 +48,13 @@
     <h4 class="h6">Guesses</h4>
     <table class="table table-sm mb-0">
       <thead>
-        <tr><th>Player</th><th>Answer</th><th>Secondary</th></tr>
+        <tr><th>Player</th><th>Team</th><th>Answer</th><th>Secondary</th></tr>
       </thead>
       <tbody>
         {% for guess in state.round.guesses.lines %}
         <tr>
           <td>{{ guess.player|default:"—" }}</td>
+          <td>{{ guess.team }}</td>
           <td>{% include 'webadmin/_guess_answer.html' with field='text' text=guess.text correct=guess.text_correct %}</td>
           <td>{% if guess.secondary_text %}{% include 'webadmin/_guess_answer.html' with field='secondary' text=guess.secondary_text correct=guess.secondary_correct %}{% else %}—{% endif %}</td>
         </tr>
@@ -74,32 +75,19 @@
 </div>
 {% endif %}
 
-{% if state.player_scores %}
-<div class="row g-3 mb-3">
-  <div class="col-md-6">
-    <h3 class="h6">Standings</h3>
-    <ul class="list-group">
-      {% for row in state.player_scores %}
-      <li class="list-group-item d-flex justify-content-between gap-2">
-        <span>{{ row.discord_name|default:row.username }}</span>
-        <span class="text-body-secondary">{{ row.points }} pt</span>
-      </li>
-      {% endfor %}
-    </ul>
-  </div>
-  {% if state.team_scores %}
-  <div class="col-md-6">
-    <h3 class="h6">Teams</h3>
-    <ul class="list-group">
-      {% for row in state.team_scores %}
-      <li class="list-group-item d-flex justify-content-between gap-2">
-        <span>{{ row.name }}</span>
-        <span class="text-body-secondary">{{ row.points }} pt</span>
-      </li>
-      {% endfor %}
-    </ul>
-  </div>
-  {% endif %}
+{% if state.scores %}
+<div class="mb-3">
+  <h3 class="h6">Standings</h3>
+  <ul class="list-group">
+    {% for row in state.scores %}
+    <li class="list-group-item d-flex justify-content-between gap-2">
+      <span>
+        {% if row.kind == 'team' %}<span class="badge text-bg-secondary">Team</span> {% endif %}{{ row.label }}
+      </span>
+      <span class="text-body-secondary">{{ row.points }} pt</span>
+    </li>
+    {% endfor %}
+  </ul>
 </div>
 {% endif %}
 

@@ -53,11 +53,6 @@ def teams_of(game: Game) -> list[dict]:
                     LIST_TIMEOUT)
 
 
-def has_teams(game: Game) -> bool:
-    """Return True when the game has teams, read from the cached roster."""
-    return bool(teams_of(game))
-
-
 def _team_rows(game: Game) -> list[dict]:
     """Read the teams of a game with their players straight from the database."""
     return [{'pk': team.pk, 'name': team.name,

@@ -47,7 +47,7 @@ from .services.rounds import (create_round, current_round,
                               pick_question, queued_count,
                               reveal_round, open_round, round_guesses,
                               set_guess_correctness)
-from .services.scores import game_scores, game_team_scores
+from .services.scores import game_scores
 from .services.teams import (add_team, assign_player, assign_players,
                             copyable_teams, copy_team, copy_team_by_pk,
                             remove_player, remove_team, rename_team,
@@ -179,7 +179,7 @@ class GameTests(GameTestCase):
         # The recap counts the round the ending revealed.
         self.assertEqual(result['rounds'], 1)
         self.assertEqual(result['guesses'], 1)
-        self.assertEqual([score['points'] for score in result['player_scores']], [2])
+        self.assertEqual([score['points'] for score in result['scores']], [2])
 
     def test_finishing_a_game_without_an_open_round_reveals_nothing(self):
         game = self.create_game()
@@ -405,7 +405,7 @@ class RoundTests(GameTestCase):
         result = reveal_round(self.round, self.host)
         self.assertEqual(result['index'], 1)
         self.assertEqual(result['question_text'], 'Song (Band)')
-        self.assertEqual([row['points'] for row in result['player_scores']], [2])
+        self.assertEqual([row['points'] for row in result['scores']], [2])
 
     def test_the_reveal_refuses_a_second_reveal(self):
         reveal_round(self.round, self.host)
@@ -572,6 +572,7 @@ class GuessValidationTests(GameTestCase):
         self.assertFalse(line['text_correct'])
         self.assertFalse(line['secondary_correct'])
         self.assertTrue(line['player'])
+        self.assertEqual(line['team'], '')
 
     def test_the_counts_alone_do_not_carry_the_guesses(self):
         self.assertNotIn('lines', round_guesses(self.round))
@@ -670,27 +671,45 @@ class TeamTests(GameTestCase):
         self.assertEqual(list(reds.players.all()), [])
         self.assertEqual(team_of(self.game, self.player_row), blues)
 
-    def test_a_team_without_guesses_scores_zero(self):
+    def test_a_team_takes_the_points_of_its_players(self):
         add_team(self.game, self.host, 'Reds', [self.player_row])
-        self.assertEqual(game_team_scores(self.game),
-                         [{'name': 'Reds', 'points': 0}])
+        submit_guess(self.round, self.player_row, 'Song', 'Band')
+        rows = game_scores(self.game)
+        self.assertEqual([(row['label'], row['points']) for row in rows],
+                         [('Reds', 2)])
+        # The players points are the team ones, not their own as well.
+        self.assertEqual([row['kind'] for row in rows], ['team'])
 
     def test_team_scores_add_up_their_players_points(self):
         add_team(self.game, self.host, 'Reds', [self.player_row])
         add_team(self.game, self.host, 'Blues', [self.teammate])
         submit_guess(self.round, self.player_row, 'Song', 'Band')
         submit_guess(self.round, self.teammate, 'Song', '')
-        scores = game_team_scores(self.game)
-        self.assertEqual([(score['name'], score['points']) for score in scores],
+        rows = game_scores(self.game)
+        self.assertEqual([(row['label'], row['points']) for row in rows],
                          [('Reds', 2), ('Blues', 1)])
 
-    def test_answers_without_a_team_stay_out_of_the_team_scores(self):
+    def test_a_team_that_did_not_score_is_still_ranked(self):
         add_team(self.game, self.host, 'Reds', [self.player_row])
-        submit_guess(self.round, self.teammate, 'Song', 'Band')
-        self.assertEqual(game_team_scores(self.game),
-                         [{'name': 'Reds', 'points': 0}])
-        scores = game_scores(self.game)
-        self.assertEqual([score['points'] for score in scores], [2])
+        submit_guess(self.round, self.player_row, 'Nope', 'Nope')
+        self.assertEqual([(row['label'], row['points']) for row in
+                          game_scores(self.game)], [('Reds', 0)])
+
+    def test_the_leaderboard_mixes_teams_and_solo_players(self):
+        add_team(self.game, self.host, 'Reds', [self.player_row])
+        submit_guess(self.round, self.player_row, 'Song', 'Band')
+        submit_guess(self.round, self.teammate, 'Song', '')
+        rows = game_scores(self.game)
+        self.assertEqual([row['kind'] for row in rows], ['team', 'player'])
+        self.assertEqual([row['points'] for row in rows], [2, 1])
+        self.assertEqual(rows[0]['name'], 'Reds')
+        self.assertEqual(rows[1]['username'], self.teammate.username)
+    def test_a_guess_line_names_the_team_it_was_made_in(self):
+        add_team(self.game, self.host, 'Reds', [self.player_row])
+        submit_guess(self.round, self.player_row, 'Song', 'Band')
+        [line] = round_guesses(self.round, with_lines=True)['lines']
+        self.assertEqual(line['team'], 'Reds')
+
     def test_the_roster_lists_the_teams_with_their_players(self):
         team = add_team(self.game, self.host, 'Reds', [self.player_row])
         self.assertEqual(teams_of(self.game),
@@ -1615,7 +1634,7 @@ class QuizTypeTests(GameTestCase):
         self.assertEqual(recap['rounds'], 1)
         self.assertEqual(recap['guesses'], 1)
         self.assertEqual(recap['game_name'], self.game.display_name)
-        self.assertEqual([row['points'] for row in recap['player_scores']], [2])
+        self.assertEqual([row['points'] for row in recap['scores']], [2])
 
     def test_a_queued_question_is_not_a_round_played(self):
         round_ = Round.objects.get(
@@ -1626,7 +1645,7 @@ class QuizTypeTests(GameTestCase):
         recap = end_game(self.game, self.host)
         self.assertEqual(recap['rounds'], 1)
         self.assertEqual(recap['guesses'], 1)
-        self.assertEqual([row['points'] for row in recap['player_scores']], [2])
+        self.assertEqual([row['points'] for row in recap['scores']], [2])
 
     def test_a_round_edited_in_the_admin_is_validated(self):
         round_ = Round.objects.get(

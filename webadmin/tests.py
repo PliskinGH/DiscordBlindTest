@@ -1179,6 +1179,16 @@ class GameControlTests(CacheTestCase):
         self.assertContains(response, 'Guesses')
         self.assertContains(response, 'guestie')
         self.assertContains(response, 'Wundervall')
+        self.assertContains(response, '<th>Team</th>')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_guesses_table_names_the_team_of_a_guess(self, roles):
+        game = self._running_round()
+        add_team(game, self.member, 'Reds', [self.guest])
+        submit_guess(current_round(game), self.guest, 'Wundervall', '')
+        response = self.client.get(self._url('game_state', game.pk))
+        self.assertContains(response, '<th>Team</th>')
+        self.assertContains(response, 'Reds')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_member_reads_no_other_guess(self, roles):
@@ -1198,7 +1208,7 @@ class GameControlTests(CacheTestCase):
         guess.refresh_from_db()
         self.assertTrue(guess.text_correct)
         # The standings follow the flag on the next read.
-        self.assertEqual(control_state(game)['player_scores'][0]['points'], 1)
+        self.assertEqual(control_state(game)['scores'][0]['points'], 1)
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_host_marks_a_matched_guess_wrong(self, roles):
@@ -1727,6 +1737,15 @@ class GameControlTests(CacheTestCase):
         response = self.client.get(self._url('game', game.pk))
         self.assertContains(response, 'Standings')
         self.assertContains(response, 'hostie')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_standings_rank_a_team_with_its_players_points(self, roles):
+        game = self._running_round()
+        add_team(game, self.member, 'Reds', [self.guest])
+        submit_guess(current_round(game), self.guest, 'Wundervall', '')
+        response = self.client.get(self._url('game_state', game.pk))
+        self.assertContains(response, 'Reds')
+        self.assertContains(response, 'Team')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_game_cannot_be_set_up_while_another_one_runs(self, roles):

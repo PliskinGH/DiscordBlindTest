@@ -746,12 +746,15 @@ class GameCog(commands.Cog):
 
     async def post_reveal(self, channel: discord.abc.Messageable,
                           reveal: dict) -> list[discord.Message]:
-        """Publish the answer of a revealed round with the standings."""
+        """Publish the answer of a revealed round with its guesses and scores."""
         posted = [await embeds.post(channel, embeds=[embeds.reveal_embed(reveal)])]
-        if reveal['player_scores']:
+        if reveal['lines']:
+            posted.append(await embeds.post(channel, embeds=[
+                embeds.guesses_embed(reveal)]))
+        if reveal['scores']:
             posted.append(await embeds.post(channel, embeds=[embeds.scores_embed(
                 reveal, f'Round {reveal["index"]} scores',
-                embeds.leader_line(reveal['player_scores'], 'is currently winning'))]))
+                embeds.leader_line(reveal['scores'], 'is currently winning'))]))
         return posted
 
     # The public messages of a game, through one helper: the controls post their

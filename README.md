@@ -162,8 +162,9 @@ Every public embed is titled with the game name — the one given at `/quiz setu
 
 - A round embed shows the prompt only.
 - The answer appears with the reveal, written as `<Answer> (<Secondary answer>)`.
+- The guesses appear with the reveal, in `<game name> — Round N guesses`: one line per guess, marked right or wrong.
 - Scores are published in one shape, twice: `<game name> — Round N scores` and `<game name> — final scores`.
-- Each score embed leads with the leader in its description and lists the players in a `Standings` field.
+- A guess counts for the team it was made in, or for its player when it was made outside one: the teams and the solo players share one `Standings` field.
 - All public messages go through `discordbot.embeds.post`:
   - It clips the content and the embeds to Discord's limits (2000 characters of content, 4096 of description, 25 fields, 6000 per message).
   - It adds an "and N more" note instead of dropping players silently.

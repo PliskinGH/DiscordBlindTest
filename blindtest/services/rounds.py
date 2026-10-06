@@ -148,10 +148,12 @@ def pick_question(game: Game, quiz_type: str = QuizType.BLIND_TEST) -> Question:
 
 
 def guess_line(guess: Guess) -> dict:
-    """Return how one guess is listed to a host, with its two sub-answers."""
+    """Return how one guess is listed to a host, with its team and answers."""
     player = guess.player
+    team = guess.team
     return {'pk': guess.pk,
             'player': player_label(player) if player is not None else '',
+            'team': team.name if team is not None else '',
             'text': guess.text, 'secondary_text': guess.secondary_text,
             'text_correct': bool(guess.text_correct),
             'secondary_correct': bool(guess.secondary_correct)}
@@ -163,7 +165,7 @@ def round_guesses(round_: Round, with_lines: bool = False) -> dict:
     ``with_lines`` adds the guesses themselves, so a host reads them as they
     come in; the guesses are read once either way.
     """
-    guesses = list(round_.guesses.select_related('player'))
+    guesses = list(round_.guesses.select_related('player', 'team'))
     right = [guess for guess in guesses
              if guess.text_correct and guess.player is not None]
     counts = {'guessed': len(guesses), 'right': len(right),
@@ -203,8 +205,8 @@ def set_guess_correctness(guess: Guess, host_member: DiscordMember,
 def reveal_payload(round_: Round) -> dict:
     """Return what the answer of a revealed round and its standings show."""
     display = round_display(round_)
-    display['player_scores'] = game_scores(round_.game)
-    display.update(round_guesses(round_))
+    display['scores'] = game_scores(round_.game)
+    display.update(round_guesses(round_, with_lines=True))
     return display
 
 

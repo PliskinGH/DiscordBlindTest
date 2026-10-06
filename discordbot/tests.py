@@ -56,7 +56,7 @@ def game_payload(**overrides) -> dict:
                'answer_text': 'Song (Band)', 'expected': 'Song', 'options': [],
                'prompt_set': True,
                'queued': 7, 'guessed': 2, 'right': 1, 'right_names': ['user43'],
-               'player_scores': [], 'team_scores': [], 'rounds': 1, 'guesses': 2,
+               'scores': [], 'lines': [], 'rounds': 1, 'guesses': 2,
                'available': 5, 'created_at': None, 'finished_at': None,
                'game_id': 1, 'channel_id': 100}
     payload.update(overrides)
@@ -84,10 +84,13 @@ class EmbedTests(NoNetworkMixin, SimpleTestCase):
 
     def test_every_embed_names_the_game(self) -> None:
         scores = [{'username': 'a', 'discord_name': 'A', 'points': 3}]
-        payload = game_payload(player_scores=scores)
+        payload = game_payload(scores=scores, lines=[
+            {'pk': 1, 'player': 'A', 'text': 'Song', 'secondary_text': '',
+             'text_correct': True, 'secondary_correct': False}])
         built = [embeds.publication_embed(payload, '<@1>'),
                  embeds.round_embed(payload),
                  embeds.reveal_embed(payload),
+                 embeds.guesses_embed(payload),
                  embeds.scores_embed(
                      payload, 'Round 3 scores',
                      embeds.leader_line(scores, 'is currently winning')),
@@ -114,8 +117,7 @@ class EmbedTests(NoNetworkMixin, SimpleTestCase):
 
     def test_the_round_scores_share_the_shape_of_the_final_scores(self) -> None:
         scores = [{'username': 'a', 'discord_name': 'A', 'points': 3}]
-        payload = game_payload(player_scores=scores,
-                               team_scores=[{'name': 'Reds', 'points': 3}])
+        payload = game_payload(scores=scores)
         round_scores = embeds.scores_embed(
             payload, 'Round 3 scores',
             embeds.leader_line(scores, 'is currently winning'))
@@ -156,19 +158,31 @@ class EmbedTests(NoNetworkMixin, SimpleTestCase):
         self.assertEqual(embed.fields[1].name, 'Correct players')
         self.assertIn('user43', embed.fields[1].value)
 
+    def test_the_reveal_lists_every_guess(self) -> None:
+        payload = game_payload(lines=[
+            {'pk': 1, 'player': 'A', 'text': 'Song', 'secondary_text': 'Band',
+             'text_correct': True, 'secondary_correct': True},
+            {'pk': 2, 'player': 'B', 'text': 'Wrong', 'secondary_text': '',
+             'text_correct': False, 'secondary_correct': False}])
+        embed = embeds.guesses_embed(payload)
+        self.assertEqual(embed.fields[0].name, 'Guesses')
+        self.assertIn('✅ A — Song (Band)', embed.fields[0].value)
+        self.assertIn('❌ B — Wrong', embed.fields[0].value)
+
+
     def test_the_recap_summarises_the_game(self) -> None:
         embed = embeds.recap_embed(game_payload(
-            player_scores=[{'username': 'a', 'discord_name': 'A', 'points': 3}],
-            team_scores=[{'name': 'Reds', 'points': 3}], rounds=3, guesses=9))
+            scores=[{'username': 'a', 'discord_name': 'A', 'points': 3}],
+            rounds=3, guesses=9))
         names = [field.name for field in embed.fields]
-        self.assertEqual(names, ['Standings', 'Teams', 'Rounds played',
+        self.assertEqual(names, ['Standings', 'Rounds played',
                                  'Guesses given', 'Quiz type'])
         self.assertEqual(embed.description, '🥇 A wins!')
 
     def test_a_long_standings_list_says_how_many_players_are_left(self) -> None:
         scores = [{'username': f'user{index}', 'discord_name': 'n' * 200,
                    'points': index} for index in range(40)]
-        embed = embeds.recap_embed(game_payload(player_scores=scores))
+        embed = embeds.recap_embed(game_payload(scores=scores))
         standings = embed.fields[0]
         self.assertEqual(standings.name, 'Standings')
         self.assertLessEqual(len(standings.value), embeds.FIELD_VALUE_LIMIT)
@@ -195,7 +209,7 @@ class EmbedTests(NoNetworkMixin, SimpleTestCase):
     def test_a_message_stays_under_the_total_limit(self) -> None:
         scores = [{'username': f'user{index}', 'discord_name': 'n' * 200,
                    'points': index} for index in range(40)]
-        payload = game_payload(player_scores=scores)
+        payload = game_payload(scores=scores)
         built = embeds.fit_all([embeds.reveal_embed(payload),
                                 embeds.scores_embed(
                                     payload, 'Round 3 scores',
@@ -559,7 +573,7 @@ class FlowResultTests(NoNetworkMixin, TransactionTestCase):
     def test_the_reveal_crosses_the_bridge_without_lazy_queries(self) -> None:
         result = self._revealed_payload()
         self.assertEqual(result['answer_text'], 'Song (Band)')
-        self.assertEqual([row['points'] for row in result['player_scores']], [2])
+        self.assertEqual([row['points'] for row in result['scores']], [2])
 
     @staticmethod
     def _picker_choices() -> list[dict]:

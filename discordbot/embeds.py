@@ -30,6 +30,7 @@ RUNNING = discord.Colour.blurple()
 REVEALED = discord.Colour.gold()
 SCORED = discord.Colour.green()
 FINISHED = discord.Colour.dark_grey()
+TEAM_MARK = '👥'
 MEDALS = ('🥇', '🥈', '🥉')
 TYPE_ICONS = {QuizType.BLIND_TEST.value: '🎵', QuizType.OPEN.value: '❓',
               QuizType.MULTIPLE_CHOICE.value: '🔢'}
@@ -108,23 +109,34 @@ def icon(quiz_type: str) -> str:
 
 def row_label(row: dict) -> str:
     """Return the name a score row shows, be it a player or a team."""
-    if 'name' in row:
-        return row['name']
-    return row['discord_name'] or row['username']
+    if 'label' in row:
+        label = row['label']
+    elif 'name' in row:
+        label = row['name']
+    else:
+        label = row['discord_name'] or row['username']
+    return f'{TEAM_MARK} {label}' if row.get('kind') == 'team' else label
+
+
+def fit_lines(lines: list[str], limit: int) -> tuple[list[str], int]:
+    """Return the lines that fit a character limit, and how many are left."""
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if kept and used + len(line) + 1 > limit:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    return kept, len(lines) - len(kept)
 
 
 def score_lines(rows: list[dict], limit: int) -> tuple[list[str], int]:
     """Return the score lines that fit a limit, and how many rows are left."""
-    lines: list[str] = []
-    used = 0
+    lines = []
     for rank, row in enumerate(rows, start=1):
         medal = MEDALS[rank - 1] if rank <= len(MEDALS) else f'{rank}.'
-        line = f'{medal} {row_label(row)} — {row["points"]} pt'
-        if lines and used + len(line) + 1 > limit:
-            break
-        lines.append(line)
-        used += len(line) + 1
-    return lines, len(rows) - len(lines)
+        lines.append(f'{medal} {row_label(row)} — {row["points"]} pt')
+    return fit_lines(lines, limit)
 
 
 def more(left: int, noun: str) -> str:
@@ -206,6 +218,29 @@ def reveal_embed(payload: dict) -> discord.Embed:
     return embed
 
 
+def guess_line(row: dict) -> str:
+    """Return one guess of a revealed round, marked when it was right."""
+    text = row['text'] or '—'
+    if row['secondary_text']:
+        text = f'{text} ({row["secondary_text"]})'
+    mark = '✅' if row['text_correct'] or row['secondary_correct'] else '❌'
+    return (f'{mark} {row["player"]} — {text}' if row['player']
+            else f'{mark} {text}')
+
+
+def guesses_embed(payload: dict) -> discord.Embed:
+    """Return the embed listing every guess of a revealed round."""
+    kept, left = fit_lines([guess_line(row) for row in payload['lines']],
+                           FIELD_VALUE_LIMIT - RESERVE)
+    embed = discord.Embed(
+        title=title(payload, f'Round {payload["index"]} guesses'),
+        colour=REVEALED)
+    embed.add_field(name='Guesses', value=block(kept, left, 'guesses'))
+    embed.set_footer(
+        text=f'{payload["game_name"]} · round {payload["index"]}')
+    return embed
+
+
 def leader_line(scores: list[dict], verb: str) -> str:
     """Return the callout naming the best player of a scoreboard."""
     if not scores:
@@ -219,7 +254,7 @@ def scores_embed(payload: dict, suffix: str, lead: str,
     """Return a scoreboard: a leader callout, the standings and a footer."""
     embed = discord.Embed(title=title(payload, suffix), description=lead,
                           colour=colour, timestamp=payload.get('finished_at'))
-    lines, left = score_lines(payload['player_scores'][:MAX_LISTED_PLAYERS],
+    lines, left = score_lines(payload['scores'][:MAX_LISTED_PLAYERS],
                               FIELD_VALUE_LIMIT - RESERVE)
     if lines:
         embed.add_field(name='Standings', value=block(lines, left), inline=False)
@@ -231,14 +266,9 @@ def scores_embed(payload: dict, suffix: str, lead: str,
 
 def recap_embed(payload: dict) -> discord.Embed:
     """Return the final scores and the summary of a finished game."""
-    fields = []
-    if payload['team_scores']:
-        team_lines, teams_left = score_lines(payload['team_scores'],
-                                             FIELD_VALUE_LIMIT - RESERVE)
-        fields.append(('Teams', block(team_lines, teams_left, 'teams'), False))
-    fields += [('Rounds played', str(payload['rounds']), True),
-               ('Guesses given', str(payload['guesses']), True),
-               ('Quiz type', payload['type_label'], True)]
+    fields = [('Rounds played', str(payload['rounds']), True),
+              ('Guesses given', str(payload['guesses']), True),
+              ('Quiz type', payload['type_label'], True)]
     return scores_embed(payload, 'final scores',
-                        leader_line(payload['player_scores'], 'wins'),
+                        leader_line(payload['scores'], 'wins'),
                         colour=FINISHED, fields=fields)

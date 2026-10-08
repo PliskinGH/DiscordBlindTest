@@ -1456,6 +1456,16 @@ class GameControlTests(CacheTestCase):
                             'Reveal the round')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_live_part_polls_only_while_the_page_is_visible(self, roles):
+        # htmx re-arms its poll chain whatever the visibility: the filter is
+        # what keeps a hidden tab from asking the server.
+        game = self._running_round()
+        for name in ('game', 'game_guess'):
+            self.assertContains(
+                self.client.get(self._url(name, game.pk)),
+                'every 2s [!document.hidden]')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_stranger_drives_no_game(self, roles):
         game = self._game()
         self._as_guest()

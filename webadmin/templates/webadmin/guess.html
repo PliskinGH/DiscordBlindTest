@@ -16,7 +16,7 @@
 
 <div id="game-live"
      hx-get="{% url 'webadmin:game_live' guild.discord_id game.pk %}"
-     hx-trigger="every 2s"
+     hx-trigger="every 2s [!document.hidden]"
      hx-swap="innerHTML">
   {% include 'webadmin/_game_state.html' %}
 </div>

@@ -20,7 +20,7 @@
 
 <div id="game-live"
      hx-get="{{ state_url }}"
-     hx-trigger="every 2s"
+     hx-trigger="every 2s [!document.hidden]"
      hx-swap="innerHTML">
   {% include 'webadmin/_game_state.html' %}
 </div>

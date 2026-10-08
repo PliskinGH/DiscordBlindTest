@@ -5,6 +5,7 @@ __pycache__/
 .vscode/
 .pytest_cache/
 .coverage
+.temp/
 db.sqlite3
 media/
 staticfiles/

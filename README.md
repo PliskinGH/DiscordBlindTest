@@ -195,7 +195,7 @@ The web process offers an alternative interface (mainly for hosts, but can also 
 - Each server has a **control room** where its hosts run a game from the browser, and every member of the server guesses from theirs:
   - Feature parity with the discord bot, with the host controls and also the guess from the players.
   - Every change is recorded as a **broadcast** and posted by the bot holding the Discord connection, so everything is posted on the Discord channel even if acted from the web. The recent broadcasts of the game are listed, and a broadcast that failed can be posted again.
-  - The live parts of the control room and of the guess page follow the game with [htmx](https://htmx.org): the round, the list of guesses and the standings update by themselves, so a guess given in Discord shows up without reloading. A host can mark one right or wrong when the answer matcher missed it (e.g. a spelling the accepted variants did not cover).
+  - The live parts of the control room and of the guess page follow the game with [htmx](https://htmx.org): the round, the list of guesses and the standings update by themselves, so a guess given in Discord shows up without reloading (the page only polls while visible). A host can mark one right or wrong when the answer matcher missed it (e.g. a spelling the accepted variants did not cover).
   - The **Teams** panel creates, renames, populates and removes the teams of the game, and copies teams of earlier games.
   - Questions to queue and games to copy from are searched server-side. The search needs a cache shared by every process that serves the web admin: set `REDIS_URL` in production, since the in-memory cache of a single worker will not answer a search another worker is asked for.
 

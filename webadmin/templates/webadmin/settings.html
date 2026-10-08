@@ -10,6 +10,14 @@
   </ol>
 </nav>
 
+{% if bot_left %}
+<p class="alert alert-danger mb-4">
+  <span class="badge text-bg-danger">the bot left this server</span>
+  {% if invite_url %}
+  <a class="btn btn-sm btn-outline-primary" href="{{ invite_url }}">Invite the bot</a>
+  {% endif %}
+</p>
+{% else %}
 <div class="row g-4">
   <div class="col-lg-6">
     <div class="card mb-4">
@@ -83,4 +91,5 @@
     </div>
   </div>
 </div>
+{% endif %}
 {% endblock %}

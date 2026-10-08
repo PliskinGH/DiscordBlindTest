@@ -20,7 +20,8 @@ from blindtest.services.guilds import (add_host, clear_default_channel,
 from .. import discord_api
 from ..forms import (ChannelForm, HostRoleForm, HostUserForm, PingRoleForm,
                      form_errors)
-from ..permissions import AdminRequired, require_admin_member, require_guild
+from ..permissions import (AdminRequired, BOT_LEFT, bot_left,
+                           require_admin_member, require_guild)
 
 CLEAR = 'clear'
 REMOVE = 'remove'
@@ -66,16 +67,25 @@ class SettingsView(AdminRequired, TemplateView):
         context = super().get_context_data(**kwargs)
         guild_id = int(self.kwargs['discord_guild_id'])
         guild = require_guild(guild_id)
-        channels = discord_api.fetch_bot_channels(guild_id)
-        roles = discord_api.fetch_bot_roles(guild_id)
+        channels = roles = None
+        try:
+            channels = discord_api.fetch_bot_channels(guild_id)
+            roles = discord_api.fetch_bot_roles(guild_id)
+        except discord_api.BotNotInServer:
+            channels = roles = None
+        gone = channels is None or bot_left(self.request, guild_id)
         channel_id = default_channel_of(guild)
         ping_role_id = default_ping_role_of(guild)
         context.update(
             guild=guild,
-            channel=discord_api.channel_label(guild_id, channel_id),
-            ping_role=discord_api.role_label(guild_id, ping_role_id),
-            hosts=discord_api.host_labels(
-                guild_id, hosts_of(guild)),
+            channel=('' if gone else
+                     discord_api.channel_label(guild_id, channel_id)),
+            ping_role=('' if gone else
+                       discord_api.role_label(guild_id, ping_role_id)),
+            hosts=([] if gone else
+                   discord_api.host_labels(guild_id, hosts_of(guild))),
+            bot_left=gone,
+            invite_url=(discord_api.invite_url(guild_id) if gone else ''),
             channel_form=ChannelForm(
                 options=channels, current=channel_id,
                 action=reverse('webadmin:setting_channel',
@@ -104,9 +114,13 @@ class ChannelView(AdminRequired, View):
             if _apply(request, clear_default_channel, guild, member):
                 messages.success(request, 'The games follow the host again.')
             return _back(guild_id)
-        form = ChannelForm(
-            request.POST, options=discord_api.fetch_bot_channels(guild_id),
-            current=default_channel_of(guild))
+        try:
+            form = ChannelForm(
+                request.POST, options=discord_api.fetch_bot_channels(guild_id),
+                current=default_channel_of(guild))
+        except discord_api.BotNotInServer:
+            messages.error(request, BOT_LEFT)
+            return _back(guild_id)
         if not form.is_valid():
             messages.error(request, form_errors(form))
             return _back(guild_id)
@@ -131,9 +145,13 @@ class PingRoleView(AdminRequired, View):
             if _apply(request, clear_default_ping_role, guild, member):
                 messages.success(request, 'The games ping nobody by default.')
             return _back(guild_id)
-        form = PingRoleForm(
-            request.POST, options=discord_api.fetch_bot_roles(guild_id),
-            current=default_ping_role_of(guild))
+        try:
+            form = PingRoleForm(
+                request.POST, options=discord_api.fetch_bot_roles(guild_id),
+                current=default_ping_role_of(guild))
+        except discord_api.BotNotInServer:
+            messages.error(request, BOT_LEFT)
+            return _back(guild_id)
         if not form.is_valid():
             messages.error(request, form_errors(form))
             return _back(guild_id)
@@ -169,8 +187,12 @@ class HostsView(AdminRequired, View):
     def _mention_of(self, request, guild_id: int) -> str | None:
         """Return the mention the submitted host form asks for."""
         if 'role_id' in request.POST:
-            form = HostRoleForm(
-                request.POST, options=discord_api.fetch_bot_roles(guild_id))
+            try:
+                form = HostRoleForm(
+                    request.POST, options=discord_api.fetch_bot_roles(guild_id))
+            except discord_api.BotNotInServer:
+                messages.error(request, BOT_LEFT)
+                return None
             if not form.is_valid():
                 messages.error(request, form_errors(form))
                 return None

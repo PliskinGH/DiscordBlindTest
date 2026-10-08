@@ -9,6 +9,12 @@
   <li class="list-group-item d-flex align-items-center gap-2">
     <a href="{% url 'webadmin:guild' guild.discord_id %}">{{ guild.name }}</a>
     {% if guild.manage %}<span class="badge text-bg-primary">administrator</span>{% endif %}
+    {% if guild.bot_left %}
+    <span class="badge text-bg-danger">the bot left</span>
+    {% if guild.invite_url %}
+    <a class="btn btn-sm btn-outline-primary" href="{{ guild.invite_url }}">Invite the bot</a>
+    {% endif %}
+    {% endif %}
     <span class="badge text-bg-{% if guild.active_game %}success{% else %}secondary{% endif %} ms-auto">
       {% if guild.active_game %}{{ guild.active_game.display_name }}{% else %}no game running{% endif %}
     </span>

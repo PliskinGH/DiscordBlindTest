@@ -10,6 +10,12 @@
   {% endif %}
 </p>
 <p class="mb-4">
+  {% if bot_left %}
+  <span class="badge text-bg-danger">the bot left this server</span>
+  {% if invite_url %}
+  <a class="btn btn-sm btn-outline-primary" href="{{ invite_url }}">Invite the bot</a>
+  {% endif %}
+  {% endif %}
   {% if is_host %}
   <a class="btn btn-sm btn-outline-primary"
      href="{% url 'webadmin:library' guild.discord_id %}">Library</a>

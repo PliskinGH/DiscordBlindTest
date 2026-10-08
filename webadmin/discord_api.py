@@ -23,6 +23,13 @@ STATE_SESSION_KEY = 'discord_oauth_state'
 USER_SESSION_KEY = 'discord_user'
 GUILDS_SESSION_KEY = 'discord_guilds'
 ROLES_SESSION_KEY = 'discord_roles'
+BOT_LEFT_SESSION_KEY = 'discord_bot_left'
+
+# Raised when Discord refuses a bot-token read of a server the bot left,
+# or answers that the server is unknown to it. An unknown guild (10004)
+# is that refusal; another 404 (a member, a channel) is a missing object.
+BOT_REFUSED_STATUSES = (401, 403)
+BOT_UNKNOWN_GUILD = 10004
 
 # Scopes asked for, and the Manage Server bit Discord reports per guild.
 DISCORD_OAUTH_SCOPES = 'identify guilds'
@@ -50,6 +57,20 @@ DISCORD_OAUTH_DISABLED = _('Discord login is not configured.')
 DISCORD_OAUTH_ERROR = _('Discord login failed. Please try again.')
 
 
+class BotNotInServer(requests.RequestException):
+    """Discord refused a bot-token read: the bot is not in that server."""
+
+
+def _unknown_guild(response) -> bool:
+    """Return True when Discord answers that the server is unknown to the bot."""
+    if response.status_code != 404:
+        return False
+    try:
+        return response.json().get('code') == BOT_UNKNOWN_GUILD
+    except (ValueError, AttributeError):
+        return False
+
+
 def discord_oauth_configured() -> bool:
     """Return True when the Discord application credentials are set."""
     return bool(settings.DISCORD_CLIENT_ID and settings.DISCORD_CLIENT_SECRET)
@@ -75,15 +96,14 @@ def invite_url(discord_guild_id: int) -> str:
     return f'{DISCORD_AUTHORIZE_URL}?{params}'
 
 
-def fetch_bot_guild_ids() -> set[int]:
-    """Return the servers the bot is in, read with its token.
+def fetch_bot_guild_ids() -> set[int] | None:
+    """Return the servers the bot is in, or None when Discord cannot be read.
 
-    An empty set stands for "none known", which is also what an unreachable
-    Discord gives back: the caller then offers the invite rather than a crash.
+    An empty set means the bot is in none, which is not the same as not knowing.
     """
     token = settings.DISCORD_TOKEN
     if not token:
-        return set()
+        return None
     cached = cache.get(BOT_GUILDS_KEY)
     if cached is not None:
         return set(cached)
@@ -96,7 +116,7 @@ def fetch_bot_guild_ids() -> set[int]:
     except (requests.RequestException, KeyError, ValueError):
         logger.warning('Could not read the servers the bot is in',
                        exc_info=True)
-        return set()
+        return None
     cache.set(BOT_GUILDS_KEY, guilds, BOT_GUILDS_TIMEOUT)
     return guilds
 
@@ -129,23 +149,34 @@ def fetch_discord_identity(request, code: str) -> dict:
 
 
 def fetch_member_roles(discord_guild_id: int, discord_user_id: int) -> list[int]:
-    """Return the role ids a member holds, read with the bot token."""
+    """Return the role ids a member holds, refusing a server the bot left."""
     response = requests.get(
         f'{DISCORD_API_BASE_URL}/guilds/{discord_guild_id}'
         f'/members/{discord_user_id}',
         headers={'Authorization': f'Bot {settings.DISCORD_TOKEN}'}, timeout=10)
+    if (response.status_code in BOT_REFUSED_STATUSES
+            or _unknown_guild(response)):
+        raise BotNotInServer(f'/guilds/{discord_guild_id}')
     response.raise_for_status()
     return [int(role_id) for role_id in response.json().get('roles', [])]
 
 
 def _bot_get(path: str, params: dict | None = None) -> list[dict]:
-    """Return the objects Discord lists for a bot-token request."""
+    """Return the objects Discord lists for a bot-token request.
+
+    A server the bot is not in answers 401, or 404 for a server unknown to
+    it: both are refused as BotNotInServer rather than a crash, so the page
+    can say the bot left.
+    """
     token = settings.DISCORD_TOKEN
     if not token:
         return []
     response = requests.get(f'{DISCORD_API_BASE_URL}{path}',
                             headers={'Authorization': f'Bot {token}'},
                             params=params, timeout=10)
+    if (response.status_code in BOT_REFUSED_STATUSES
+            or _unknown_guild(response)):
+        raise BotNotInServer(path)
     response.raise_for_status()
     return response.json()
 

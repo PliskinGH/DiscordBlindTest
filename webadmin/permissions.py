@@ -16,11 +16,20 @@ from . import discord_api
 
 logger = logging.getLogger(__name__)
 
+BOT_LEFT = _('The bot is no longer in this server. Invite it back from the '
+             'server page before anything here can work.')
+
 
 def can_manage(request, discord_guild_id: int) -> bool:
     """Return True when the OAuth permissions let the player manage the guild."""
     return bool(discord_api.session_permissions(request.session, discord_guild_id)
                 & discord_api.MANAGE_GUILD)
+
+
+def bot_left(request, discord_guild_id: int) -> bool:
+    """Return True when a read of this request said Discord refused the server."""
+    return str(discord_guild_id) in request.session.get(
+        discord_api.BOT_LEFT_SESSION_KEY, [])
 
 
 def member_for(request, discord_guild_id: int,
@@ -39,28 +48,61 @@ def member_for(request, discord_guild_id: int,
 
 
 def roles_for(request, discord_guild_id: int) -> list[int]:
-    """Return the role ids of the member, read once per guild per session."""
+    """Return the role ids of the member, read once per guild per session.
+
+    A read Discord could not answer is not remembered, so the next request
+    tries again rather than losing the member's rights for the whole session.
+    """
     stored = request.session.get(discord_api.ROLES_SESSION_KEY, {})
     key = str(discord_guild_id)
     if key in stored:
         return stored[key]
     account = request.session.get(discord_api.USER_SESSION_KEY, {})
-    stored[key] = _read_roles(discord_guild_id, account.get('id'))
+    roles = _read_roles(request, discord_guild_id, account.get('id'))
+    if roles is None:
+        return []
+    stored[key] = roles
     request.session[discord_api.ROLES_SESSION_KEY] = stored
-    return stored[key]
+    return roles
 
 
-def _read_roles(discord_guild_id: int, discord_user_id) -> list[int]:
-    """Return the role ids Discord reports, or none when it cannot be read."""
+def _read_roles(request, discord_guild_id: int, discord_user_id) -> list[int] | None:
+    """Return the role ids Discord reports, or None when it cannot be read.
+
+    A server that refuses the bot is remembered in the session, so the pages
+    of that server can say the bot left without asking Discord again.
+    """
     if not discord_user_id:
         return []
     try:
-        return discord_api.fetch_member_roles(discord_guild_id,
-                                          int(discord_user_id))
+        roles = discord_api.fetch_member_roles(discord_guild_id,
+                                               int(discord_user_id))
+    except discord_api.BotNotInServer:
+        _mark_bot_left(request, discord_guild_id)
+        logger.info('The bot is not in guild %s any more', discord_guild_id)
+        return None
     except Exception:
         logger.warning('Could not read the roles of %s in guild %s',
                        discord_user_id, discord_guild_id, exc_info=True)
-        return []
+        return None
+    _clear_bot_left(request, discord_guild_id)
+    return roles
+
+
+def _mark_bot_left(request, discord_guild_id: int) -> None:
+    """Remember in the session that Discord refused this server to the bot."""
+    left = set(request.session.get(discord_api.BOT_LEFT_SESSION_KEY, ()))
+    left.add(str(discord_guild_id))
+    request.session[discord_api.BOT_LEFT_SESSION_KEY] = list(left)
+
+
+def _clear_bot_left(request, discord_guild_id: int) -> None:
+    """Forget a past refusal once a read of this server worked again."""
+    key = str(discord_guild_id)
+    left = request.session.get(discord_api.BOT_LEFT_SESSION_KEY, [])
+    if key in left:
+        request.session[discord_api.BOT_LEFT_SESSION_KEY] = [
+            given for given in left if given != key]
 
 
 def require_session_guild(request, discord_guild_id: int) -> dict:
@@ -119,7 +161,9 @@ class HostRequired(GuildAccessMixin):
         try:
             require_host_member(request, discord_guild_id)
         except PermissionError as error:
-            raise PermissionDenied(str(error)) from error
+            raise PermissionDenied(
+                str(BOT_LEFT) if bot_left(request, discord_guild_id)
+                else str(error)) from error
 
 
 class AdminRequired(GuildAccessMixin):
@@ -129,4 +173,6 @@ class AdminRequired(GuildAccessMixin):
         try:
             require_admin_member(request, discord_guild_id)
         except PermissionError as error:
-            raise PermissionDenied(str(error)) from error
+            raise PermissionDenied(
+                str(BOT_LEFT) if bot_left(request, discord_guild_id)
+                else str(error)) from error

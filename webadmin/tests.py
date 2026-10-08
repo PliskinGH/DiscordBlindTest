@@ -1,11 +1,12 @@
 """Tests for the web admin's Discord login and landing pages."""
 
 import re
-import requests
 from unittest import mock
 
 from django.core.cache import cache
 from django.test import RequestFactory, TestCase, override_settings
+
+import requests
 from django.urls import reverse
 from django.utils import timezone
 
@@ -132,6 +133,27 @@ class IdentityTests(CacheTestCase):
         self.assertEqual(identity['account'], ACCOUNT)
         self.assertEqual(identity['guilds'], GUILDS)
 
+    @mock.patch('webadmin.discord_api.requests')
+    def test_an_unknown_guild_is_read_as_a_server_the_bot_left(self, api):
+        unknown = mock.Mock(status_code=404)
+        unknown.json.return_value = {'code': discord_api.BOT_UNKNOWN_GUILD}
+        api.get.return_value = unknown
+        with self.assertRaises(discord_api.BotNotInServer):
+            discord_api.fetch_member_roles(7, 42)
+        with self.assertRaises(discord_api.BotNotInServer):
+            discord_api.fetch_bot_channels(7)
+
+    @mock.patch('webadmin.discord_api.requests')
+    def test_another_missing_object_still_crashes_loudly(self, api):
+        gone = mock.Mock(status_code=404)
+        gone.json.return_value = {'code': 10007}
+        gone.raise_for_status.side_effect = requests.HTTPError()
+        api.get.return_value = gone
+        with self.assertRaises(requests.HTTPError):
+            discord_api.fetch_member_roles(7, 42)
+        with self.assertRaises(requests.HTTPError):
+            discord_api.fetch_bot_channels(7)
+
 
 class GuildPageTests(CacheTestCase):
     """A logged in member and the servers they may open."""
@@ -223,6 +245,48 @@ class GuildSectionTests(CacheTestCase):
         self._as_plain_member()
         response = self.client.get(reverse('webadmin:library', args=[7]))
         self.assertEqual(response.status_code, 403)
+
+    def test_a_failed_roles_read_is_not_remembered(self):
+        """A host by role keeps their right once the bot is back in the server."""
+        Host.objects.create(guild=self.guild, mention='<@&99>')
+        self._as_plain_member()
+        with mock.patch('webadmin.discord_api.fetch_member_roles',
+                        side_effect=requests.RequestException):
+            response = self.client.get(reverse('webadmin:library', args=[7]))
+            self.assertEqual(response.status_code, 403)
+            self.assertNotIn('7', self.client.session.get(
+                discord_api.ROLES_SESSION_KEY, {}))
+        with mock.patch('webadmin.discord_api.fetch_member_roles',
+                        return_value=[99]):
+            self.assertEqual(self.client.get(reverse('webadmin:library', args=[7]))
+                             .status_code, 200)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles',
+                side_effect=discord_api.BotNotInServer)
+    def test_a_role_host_of_a_left_server_is_still_refused(self, roles):
+        Host.objects.create(guild=self.guild, mention='<@&99>')
+        self._as_plain_member()
+        response = self.client.get(reverse('webadmin:games', args=[7]))
+        self.assertEqual(response.status_code, 403)
+
+    @mock.patch('webadmin.discord_api.fetch_bot_channels',
+                side_effect=discord_api.BotNotInServer)
+    def test_saving_a_channel_says_the_bot_left(self, channels):
+        self.client.post(reverse('webadmin:setting_channel', args=[7]),
+                         {'channel_id': ''})
+        self.assertContains(self.client.get(reverse('webadmin:settings',
+                                                   args=[7])),
+                            'no longer in this server')
+
+    @mock.patch('webadmin.discord_api.fetch_bot_channels',
+                side_effect=discord_api.BotNotInServer)
+    @mock.patch('webadmin.discord_api.fetch_bot_roles',
+                side_effect=discord_api.BotNotInServer)
+    def test_the_settings_page_says_the_bot_left(self, roles, channels):
+        response = self.client.get(reverse('webadmin:settings', args=[7]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'the bot left this server')
+        self.assertNotContains(response, '#quiz-lounge')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_host_does_not_reach_the_settings(self, roles):
@@ -563,6 +627,15 @@ class GuildSectionTests(CacheTestCase):
             self.client.get(reverse('webadmin:settings', args=[7]))
         read.assert_not_called()
 
+    @mock.patch('webadmin.discord_api.fetch_bot_member_by_id',
+                side_effect=discord_api.BotNotInServer)
+    def test_a_member_read_refused_as_unknown_guild_falls_back(self, member):
+        """A departed server names a legacy host from the mention, not Discord."""
+        Host.objects.create(guild=self.guild, mention='<@77>')
+        response = self.client.get(reverse('webadmin:settings', args=[7]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '&lt;@77&gt;')
+
     def test_a_legacy_host_is_named_once_and_then_remembered(self):
         Host.objects.create(guild=self.guild, mention='<@77>')
         with mock.patch('webadmin.discord_api.fetch_bot_member_by_id',
@@ -699,6 +772,39 @@ class AddGuildTests(CacheTestCase):
         self.assertContains(response, 'Invite the bot')
         self.assertContains(response, 'guild_id=9')
         self.assertNotContains(response, 'guild_id=8')
+
+    @mock.patch('webadmin.discord_api.fetch_bot_guild_ids', return_value={8})
+    def test_a_recorded_server_the_bot_left_offers_the_invite_too(self, bot_guilds):
+        response = self.client.get(reverse('webadmin:dashboard'))
+        self.assertContains(response, 'the bot left')
+        self.assertContains(response, 'guild_id=7')
+        self.assertNotContains(response, reverse('webadmin:guild_add', args=[7]))
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles',
+                side_effect=discord_api.BotNotInServer)
+    def test_the_server_page_says_the_bot_left(self, roles):
+        response = self.client.get(reverse('webadmin:guild', args=[7]))
+        self.assertContains(response, 'the bot left this server')
+        self.assertContains(response, 'Invite the bot')
+
+    def test_the_server_page_marks_a_refused_roles_read(self):
+        """A fresh session learns the bot left from the roles read itself."""
+        unknown = mock.Mock(status_code=404)
+        unknown.json.return_value = {'code': discord_api.BOT_UNKNOWN_GUILD}
+        self.assertNotIn(discord_api.BOT_LEFT_SESSION_KEY, self.client.session)
+        with mock.patch('webadmin.discord_api.requests') as api:
+            api.get.return_value = unknown
+            response = self.client.get(reverse('webadmin:guild', args=[7]))
+        self.assertContains(response, 'the bot left this server')
+        self.assertContains(response, 'Invite the bot')
+        self.assertIn('7', self.client.session.get(
+            discord_api.BOT_LEFT_SESSION_KEY, []))
+
+    @mock.patch('webadmin.discord_api.fetch_bot_guild_ids', return_value=None)
+    def test_an_unreadable_discord_marks_nothing_as_left(self, bot_guilds):
+        response = self.client.get(reverse('webadmin:dashboard'))
+        self.assertContains(response, 'Known Server')
+        self.assertNotContains(response, 'the bot left')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     @mock.patch('webadmin.discord_api.fetch_bot_guild_ids', return_value={8})
@@ -1355,6 +1461,19 @@ class GameControlTests(CacheTestCase):
         response = self.client.get(reverse('webadmin:games', args=[7]))
         self.assertContains(response, self._url('game', game.pk))
         self.assertContains(response, 'Set up a game')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    @mock.patch('webadmin.discord_api.fetch_bot_channels',
+                side_effect=discord_api.BotNotInServer)
+    @mock.patch('webadmin.discord_api.fetch_bot_roles',
+                side_effect=discord_api.BotNotInServer)
+    def test_the_games_page_says_the_bot_left(self, bot_roles, bot_channels,
+                                              member_roles):
+        self._game()
+        response = self.client.get(reverse('webadmin:games', args=[7]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'the bot left this server')
+        self.assertNotContains(response, 'Set up a game')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_an_empty_guess_is_refused(self, roles):

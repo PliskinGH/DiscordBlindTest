@@ -15,8 +15,9 @@ from blindtest.services.broadcasts import (retry_broadcast,
 from blindtest.services.games import played_game
 from blindtest.services.guilds import add_guild, is_host
 
-from ..permissions import (GuildAccessMixin, HostRequired, member_for,
-                           require_guild, require_session_guild)
+from .. import discord_api
+from ..permissions import (GuildAccessMixin, HostRequired, bot_left,
+                           member_for, require_guild, require_session_guild)
 
 
 class AddGuildView(GuildAccessMixin, View):
@@ -48,9 +49,12 @@ class GuildView(GuildAccessMixin, TemplateView):
         guild = require_guild(guild_id)
         member = member_for(self.request, guild_id)
         host = is_host(guild, member)
+        gone = bot_left(self.request, guild_id)
         context.update(guild=guild,
                        is_admin=can_manage_guild(member),
                        is_host=host,
+                       bot_left=gone,
+                       invite_url=(discord_api.invite_url(guild_id) if gone else ''),
                        active_game=played_game(guild),
                        broadcasts=(unfinished_broadcasts(guild)
                                    if host else []))

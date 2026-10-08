@@ -31,8 +31,8 @@ from .. import discord_api
 from ..forms import (ChoiceGuessForm, CopyForm, CopyTeamForm, GuessForm,
                       QueueForm, RenameTeamForm, SetupGameForm, TeamForm,
                       TeamMemberForm, UnqueueForm, form_errors)
-from ..permissions import (GuildAccessMixin, HostRequired, member_for,
-                           require_guild, require_host_member)
+from ..permissions import (GuildAccessMixin, HostRequired, BOT_LEFT, bot_left,
+                           member_for, require_guild, require_host_member)
 
 CLEAR = 'clear'
 REMOVE = 'remove'
@@ -144,13 +144,21 @@ class GamesView(HostRequired, TemplateView):
         context = super().get_context_data(**kwargs)
         guild_id = _guild_id(self.kwargs)
         guild = require_guild(guild_id)
+        channels = roles = None
+        try:
+            channels = discord_api.fetch_bot_channels(guild_id)
+            roles = discord_api.fetch_bot_roles(guild_id)
+        except discord_api.BotNotInServer:
+            channels = roles = None
+        gone = channels is None or bot_left(self.request, guild_id)
         context.update(
             guild=guild, games=game_rows(guild),
             active=active_game(guild),
+            bot_left=gone,
+            invite_url=(discord_api.invite_url(guild_id) if gone else ''),
             setup_form=SetupGameForm(
                 action=reverse('webadmin:game_setup', args=[guild_id]),
-                channels=discord_api.fetch_bot_channels(guild_id),
-                roles=discord_api.fetch_bot_roles(guild_id)))
+                channels=channels, roles=roles))
         return context
 
 
@@ -233,9 +241,13 @@ class SetupGameView(HostRequired, View):
 
     def post(self, request, *args, **kwargs):
         guild_id = _guild_id(kwargs)
-        form = SetupGameForm(
-            request.POST, channels=discord_api.fetch_bot_channels(guild_id),
-            roles=discord_api.fetch_bot_roles(guild_id))
+        try:
+            form = SetupGameForm(
+                request.POST, channels=discord_api.fetch_bot_channels(guild_id),
+                roles=discord_api.fetch_bot_roles(guild_id))
+        except discord_api.BotNotInServer:
+            messages.error(request, BOT_LEFT)
+            return redirect('webadmin:games', discord_guild_id=guild_id)
         if not form.is_valid():
             messages.error(request, form_errors(form))
             return redirect('webadmin:games', discord_guild_id=guild_id)

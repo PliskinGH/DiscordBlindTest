@@ -133,6 +133,9 @@ class IdentityTests(CacheTestCase):
         self.assertEqual(identity['account'], ACCOUNT)
         self.assertEqual(identity['guilds'], GUILDS)
 
+    # A bot read only reaches Discord with a token, so the test states one:
+    # without it the reader answers an empty list instead of raising.
+    @override_settings(DISCORD_TOKEN='bot-token')
     @mock.patch('webadmin.discord_api.requests')
     def test_an_unknown_guild_is_read_as_a_server_the_bot_left(self, api):
         unknown = mock.Mock(status_code=404)
@@ -143,6 +146,7 @@ class IdentityTests(CacheTestCase):
         with self.assertRaises(discord_api.BotNotInServer):
             discord_api.fetch_bot_channels(7)
 
+    @override_settings(DISCORD_TOKEN='bot-token')
     @mock.patch('webadmin.discord_api.requests')
     def test_another_missing_object_still_crashes_loudly(self, api):
         gone = mock.Mock(status_code=404)

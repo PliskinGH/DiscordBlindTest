@@ -9,15 +9,19 @@
   </ol>
 </nav>
 
-<form class="row g-2 mb-4" method="get">
-  <div class="col-auto">
-    <input class="form-control" type="search" name="q" value="{{ wanted }}"
-           placeholder="Search a question">
-  </div>
-  <div class="col-auto">
-    <button class="btn btn-outline-secondary" type="submit">Search</button>
-  </div>
-</form>
+<div class="d-flex align-items-center gap-3 flex-wrap mb-4">
+  <form class="row g-2" method="get">
+    <div class="col-auto">
+      <input class="form-control" type="search" name="q" value="{{ wanted }}"
+             placeholder="Search a question">
+    </div>
+    <div class="col-auto">
+      <button class="btn btn-outline-secondary" type="submit">Search</button>
+    </div>
+  </form>
+
+  {% include 'webadmin/_spoilers.html' %}
+</div>
 
 {% if questions %}
 <ul class="list-group mb-4">
@@ -25,6 +29,7 @@
   <li class="list-group-item">
     <div class="d-flex align-items-center gap-2 flex-wrap">
       <a href="{% url 'webadmin:question_edit' guild.discord_id question.pk %}">{{ question.label }}</a>
+      {% if question.author %}<span class="badge text-bg-light border" title="authored by">{{ question.author }}</span>{% endif %}
       {% if question.year %}<span class="badge text-bg-secondary">{{ question.year }}</span>{% endif %}
       {% if question.choices %}
       <span class="badge text-bg-info">{{ question.choices|length }} choices</span>

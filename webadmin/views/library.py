@@ -48,8 +48,9 @@ class LibraryView(HostRequired, TemplateView):
         guild = require_guild(guild_id)
         wanted = self.request.GET.get('q', '')
         context.update(guild=guild, wanted=wanted,
-                       questions=own_questions(guild, wanted),
-                       unused_questions=unused_questions(guild),
+                       questions=own_questions(guild, self.request.user, wanted),
+                       unused_questions=unused_questions(guild,
+                                                         self.request.user),
                        unused_answers=unused_answers(guild),
                        question_form=AddQuestionForm(
                            action=reverse('webadmin:question_add',

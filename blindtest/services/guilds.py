@@ -10,7 +10,7 @@ from discordcore.cache import STATE_TIMEOUT, forget, guild_row_key, remember
 from discordcore.members import (DiscordGuild, DiscordMember, can_manage_guild,
                                  member_mentions)
 from discordcore.mentions import normalize_mention, validate_mention
-from discordcore.models import Guild, Host
+from discordcore.models import Guild, Host, Player
 
 from .. import caching
 from ..models import Game
@@ -32,6 +32,11 @@ def require_host(guild: Guild, host_member: DiscordMember) -> None:
     if not is_host(guild, host_member):
         raise PermissionError(_("Only hosts of this server can run a game. "
                                 "Ask an administrator for the host permission."))
+
+
+def player_of(member: DiscordMember) -> Player | None:
+    """Return the player row of a member, or None when they have none yet."""
+    return Player.objects.filter(discord_user_id=member.id).first()
 
 
 def require_admin(member: DiscordMember) -> None:

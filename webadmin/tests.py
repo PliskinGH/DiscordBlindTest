@@ -361,7 +361,8 @@ class GuildSectionTests(CacheTestCase):
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_the_library_lists_only_this_servers_questions(self, roles):
         self.guild.questions.create(
-            expected_answer=self.guild.answers.create(text='Mine'))
+            expected_answer=self.guild.answers.create(text='Mine'),
+            author=self.player)
         other = Guild.objects.create(discord_id=8, name='Other Server')
         other.questions.create(
             expected_answer=other.answers.create(text='Theirs'))
@@ -372,12 +373,91 @@ class GuildSectionTests(CacheTestCase):
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_the_library_offers_what_can_go(self, roles):
         self.guild.questions.create(
-            expected_answer=self.guild.answers.create(text='Mine'))
+            expected_answer=self.guild.answers.create(text='Mine'),
+            author=self.player)
         self.guild.answers.create(text='Spare')
         response = self.client.get(reverse('webadmin:library', args=[7]))
         self.assertContains(response, 'Not used yet')
         self.assertContains(response, 'Remove the question')
         self.assertContains(response, 'Remove the answer')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_library_hides_the_questions_of_another_host(self, roles):
+        other = Player.objects.create_user(
+            username='otherm', email='otherm@example.com',
+            discord_user_id=43, discord_name='otherm')
+        self.guild.questions.create(
+            expected_answer=self.guild.answers.create(text='Theirs'),
+            author=other)
+        response = self.client.get(reverse('webadmin:library', args=[7]))
+        self.assertNotContains(response, 'Theirs')
+        self.assertNotContains(response, 'otherm')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_spoiler_checkbox_shows_the_questions_of_another_host(self, roles):
+        other = Player.objects.create_user(
+            username='otherm', email='otherm@example.com',
+            discord_user_id=43, discord_name='otherm')
+        self.guild.questions.create(
+            expected_answer=self.guild.answers.create(text='Theirs'),
+            author=other)
+        self.client.post(reverse('webadmin:spoilers', args=[7]),
+                         {'spoilers': '1'})
+        self.player.refresh_from_db()
+        self.assertTrue(self.player.show_all_questions)
+        response = self.client.get(reverse('webadmin:library', args=[7]))
+        self.assertContains(response, 'Theirs')
+        self.assertContains(response, 'otherm')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_unchecking_the_spoiler_box_hides_the_other_questions(self, roles):
+        self.client.post(reverse('webadmin:spoilers', args=[7]),
+                         {'spoilers': '1'})
+        self.client.post(reverse('webadmin:spoilers', args=[7]),
+                         {'next': reverse('webadmin:library', args=[7])})
+        self.player.refresh_from_db()
+        self.assertFalse(self.player.show_all_questions)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_guild_page_offers_the_spoiler_checkbox(self, roles):
+        response = self.client.get(reverse('webadmin:guild', args=[7]))
+        self.assertContains(response, 'name="spoilers"')
+        self.assertContains(
+            response, 'title="Show every question of this server, not only the '
+                      'ones I authored"')
+        self.assertContains(response, '>Spoilers</label>')
+        self.assertContains(response, 'onchange="this.form.submit()"')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_spoiler_box_saves_without_a_button(self, roles):
+        page = reverse('webadmin:guild', args=[7])
+        toggle = self._form_of(page, reverse('webadmin:spoilers', args=[7]))
+        self.assertIn('onchange="this.form.submit()"', toggle)
+        # The only way out without JavaScript is the fallback of a dead browser.
+        self.assertEqual(toggle.count('<button'), 1)
+        self.assertIn('<noscript><button', toggle)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_guild_page_puts_the_spoiler_box_with_the_buttons(self, roles):
+        page = self.client.get(reverse('webadmin:guild', args=[7])).content.decode()
+        row = page.split('>Games</a>')[1].split('</div>')[0]
+        self.assertIn('name="spoilers"', row)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_toggle_looks_like_the_buttons_beside_it(self, roles):
+        page = reverse('webadmin:guild', args=[7])
+        toggle = self._form_of(page, reverse('webadmin:spoilers', args=[7]))
+        self.assertIn('class="btn-check"', toggle)
+        self.assertIn('class="btn btn-sm btn-outline-secondary"', toggle)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_plain_member_changes_no_spoiler_option(self, roles):
+        self._as_plain_member()
+        response = self.client.post(reverse('webadmin:spoilers', args=[7]),
+                                    {'spoilers': '1'})
+        self.assertEqual(response.status_code, 403)
+        self.player.refresh_from_db()
+        self.assertFalse(self.player.show_all_questions)
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_host_removes_an_unused_question(self, roles):
@@ -446,14 +526,18 @@ class GuildSectionTests(CacheTestCase):
         actions = set(re.findall(r'<form[^>]*action="([^"]*)"', html))
         return actions - {reverse('webadmin:logout')}
 
+    def _form_of(self, page: str, action: str) -> str:
+        """Return the markup of the form a page posts to an action."""
+        html = self.client.get(page).content.decode()
+        return next(part for part in re.findall(r'<form.*?</form>', html, re.S)
+                    if f'action="{action}"' in part)
+
     def _fields_of(self, page: str, action: str) -> list[str]:
         """Return the fields a page asks for, in the order it renders them.
 
         Scoped to the form posting to ``action``, since a page holds several.
         """
-        html = self.client.get(page).content.decode()
-        form = next(part for part in re.findall(r'<form.*?</form>', html, re.S)
-                    if f'action="{action}"' in part)
+        form = self._form_of(page, action)
         return [name for name in re.findall(
             r'<input(?![^>]*type="hidden")[^>]*name="([^"]+)"', form)
             if name != 'save']
@@ -540,7 +624,8 @@ class GuildSectionTests(CacheTestCase):
     def test_the_question_form_posts_to_its_own_handler(self, roles):
         page = reverse('webadmin:library', args=[7])
         self.assertEqual(self._form_actions(page),
-                         {reverse('webadmin:question_add', args=[7])})
+                         {reverse('webadmin:question_add', args=[7]),
+                          reverse('webadmin:spoilers', args=[7])})
         self._post_as_the_browser_does(
             page, '/library/questions/', {'answer': 'Wonderwall'})
         self.assertTrue(
@@ -870,7 +955,8 @@ class GameControlTests(CacheTestCase):
         question = self.guild.questions.create(
             prompt=prompt, expected_answer=self.guild.answers.create(text=text),
             secondary_answer=(self.guild.answers.create(text=artist)
-                              if artist else None))
+                              if artist else None),
+            author=self.host_player)
         return question
 
     def _choice_question(self):
@@ -1758,6 +1844,63 @@ class GameControlTests(CacheTestCase):
                               'a post of another game')
         response = self.client.get(self._url('game_state', game.pk))
         self.assertNotContains(response, 'a post of another game')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_control_room_puts_the_host_controls_on_top(self, roles):
+        game = self._running_round()
+        state = self.client.get(self._url('game_state', game.pk)).content.decode()
+        self.assertLess(state.index('Reveal the round'), state.index('Round '))
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_host_controls_end_with_the_spoiler_toggle(self, roles):
+        game = self._running_round()
+        state = self.client.get(self._url('game_state', game.pk)).content.decode()
+        self.assertGreater(state.index('name="spoilers"'),
+                           state.index('End the game'))
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_control_room_keeps_its_broadcasts_below_its_forms(self, roles):
+        game = self._running_round()
+        mark_broadcast_failed(enqueue(game, Broadcast.Kind.PUBLISH), 'gone')
+        page = self.client.get(self._url('game', game.pk)).content.decode()
+        self.assertGreater(page.index('Recent broadcasts'),
+                           page.index('id="game-forms"'))
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_poll_mirrors_the_broadcasts_into_the_page(self, roles):
+        game = self._running_round()
+        mark_broadcast_failed(enqueue(game, Broadcast.Kind.PUBLISH), 'gone')
+        state = self.client.get(self._url('game_state', game.pk)).content.decode()
+        self.assertIn('id="game-broadcasts" hx-swap-oob="true"', state)
+        self.assertIn('Recent broadcasts', state)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_the_page_paints_its_broadcasts_once_and_in_band(self, roles):
+        # The page paints the card itself, below its forms: marking it out of
+        # band there as well would paint it a second time, at the top.
+        game = self._running_round()
+        mark_broadcast_failed(enqueue(game, Broadcast.Kind.PUBLISH), 'gone')
+        page = self.client.get(self._url('game', game.pk)).content.decode()
+        self.assertNotIn('hx-swap-oob', page)
+        self.assertEqual(page.count('id="game-broadcasts"'), 1)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_form_of_the_polled_part_comes_back_to_the_page(self, roles):
+        game = self._running_round()
+        mark_broadcast_failed(enqueue(game, Broadcast.Kind.PUBLISH), 'gone')
+        state = self.client.get(self._url('game_state', game.pk)).content.decode()
+        self.assertNotIn(self._url('game_state', game.pk), state)
+        self.assertIn(f'value="{self._url("game", game.pk)}"', state)
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_a_host_keeps_the_posts_on_the_guess_page(self, roles):
+        # The card is not a member's: a host reads it on both pages it polls.
+        game = self._running_round()
+        mark_broadcast_failed(enqueue(game, Broadcast.Kind.PUBLISH), 'gone')
+        self.assertContains(self.client.get(self._url('game_guess', game.pk)),
+                            'Recent broadcasts')
+        self.assertContains(self.client.get(self._url('game_live', game.pk)),
+                            'hx-swap-oob')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_member_is_not_offered_the_posts_of_a_game(self, roles):

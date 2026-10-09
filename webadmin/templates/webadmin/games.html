@@ -10,7 +10,10 @@
   </ol>
 </nav>
 
-<h1 class="h4">Games</h1>
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4">
+  <h1 class="h4 mb-0">Games</h1>
+  {% include 'webadmin/_spoilers.html' %}
+</div>
 
 {% if bot_left %}
 <p class="alert alert-danger mb-4">

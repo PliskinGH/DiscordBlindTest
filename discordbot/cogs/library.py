@@ -5,14 +5,15 @@ import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
+from blindtest.services.guilds import require_host
 from blindtest.services.library import (add_answer, add_question, add_variant,
                                         edit_question, library_choices,
-                                        remove_variant, split_answers,
-                                        variants_of)
+                                        remove_variant, set_show_all_questions,
+                                        split_answers, variants_of)
 
 
 from .. import embeds
-from ..db import guild_for, run_db
+from ..db import guild_for, player_for, run_db
 from ..ui import option_label, picked_pk
 
 logger = logging.getLogger(__name__)
@@ -36,10 +37,11 @@ def given_fields(**values: str) -> dict[str, str]:
 async def question_autocomplete(
         interaction: discord.Interaction,
         current: str) -> list[app_commands.Choice[str]]:
-    """Offer the questions of this server's own library."""
+    """Offer the questions of this server's own library the host may see."""
     try:
         guild = await guild_for(interaction)
-        questions = await run_db(library_choices, guild, current)
+        viewer = await player_for(interaction.user)
+        questions = await run_db(library_choices, guild, viewer, current)
         return [app_commands.Choice(name=option_label(choice),
                                     value=str(choice['pk']))
                 for choice in questions]
@@ -205,8 +207,10 @@ class LibraryCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         if not question.strip().isdigit():
             guild = await guild_for(interaction)
+            viewer = await player_for(interaction.user)
             picked = await picked_pk(
-                lambda term: run_db(library_choices, guild, term), question)
+                lambda term: run_db(library_choices, guild, viewer, term),
+                question)
             if picked is None:
                 await interaction.followup.send(
                     'That question no longer exists.', ephemeral=True)
@@ -234,6 +238,31 @@ class LibraryCog(commands.Cog):
             logger.exception('Failed to edit a question')
             await interaction.followup.send(
                 'Could not save the question.', ephemeral=True)
+
+    @group.command(
+        name='spoilers',
+        description='See every question of this server, or only yours.')
+    @app_commands.describe(
+        show='Show every question of the server, including the ones other '
+             'hosts authored.')
+    async def spoilers(self, interaction: discord.Interaction,
+                       show: bool) -> None:
+        """Keep the questions of the other hosts hidden, or read them all."""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            guild = await guild_for(interaction)
+            await run_db(require_host, guild, interaction.user)
+            viewer = await player_for(interaction.user)
+            await run_db(set_show_all_questions, viewer, show)
+            await interaction.followup.send(
+                'You now see every question of this server.' if show else
+                'You now only see the questions you authored.', ephemeral=True)
+        except (PermissionError, ValueError) as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+        except Exception:
+            logger.exception('Failed to set the spoiler option')
+            await interaction.followup.send(
+                'Could not change what you see.', ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

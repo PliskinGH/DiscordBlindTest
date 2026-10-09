@@ -20,6 +20,8 @@ urlpatterns = [
          name='guild_add'),
     path('g/<int:discord_guild_id>/posts/<int:broadcast_pk>/retry/',
          guilds.RetryBroadcastView.as_view(), name='broadcast_retry'),
+    path('g/<int:discord_guild_id>/spoilers/',
+         guilds.SpoilersView.as_view(), name='spoilers'),
     # The library of a server is filled by its hosts.
     path('g/<int:discord_guild_id>/library/', library.LibraryView.as_view(),
          name='library'),

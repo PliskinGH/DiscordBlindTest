@@ -86,6 +86,7 @@ python manage.py test         # test suite
 | `/library variant remove` | Stop accepting a variant (hosts) |
 | `/library question add` | Create a question, with multiple choice options when `choices` is given and a listening `media` link. Separate the accepted variants of an answer with `\|` (hosts) |
 | `/library question edit` | Change the fields of a question, with the options of `question add`: an option left out keeps its field, `-` clears it. The `answer` itself cannot be cleared (hosts) |
+| `/library spoilers` | Read every question of this server, or only the ones you authored (`show`: true or false) (hosts) |
 
 `/blindtest` is an alias of `/quiz`: every subcommand exists under both names, and takes the same options, except the two that name a quiz type.
 
@@ -141,6 +142,10 @@ python manage.py test         # test suite
 - `/library question edit` changes the fields of a question of the server the command runs in:
   - It takes the options of `/library question add`; an option left out keeps its field.
   - A value of `-` clears the field, except for `answer`: a question needs one.
+- A question records the host that created it, and a host reads only their own in the host panels:
+  - `/library spoilers` allows to switch modes and read the questions the other hosts authored.
+  - The web admin offers the same choice as a **Spoilers** toggle on the server, library, games and live control room pages.
+  - A host can edit their own questions; a server administrator can edit every one. A host may still queue another host's question for their own game.
 
 ## Quiz types
 

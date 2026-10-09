@@ -22,10 +22,10 @@ class AnswerAdmin(admin.ModelAdmin):
 
 @admin.register(Question)
 class QuestionAdmin(admin.ModelAdmin):
-    list_display = ('id', 'guild', 'prompt', 'expected_answer', 'secondary_answer', 'year')
+    list_display = ('id', 'guild', 'prompt', 'expected_answer', 'secondary_answer', 'author', 'year')
     list_filter = ('guild', 'year')
-    search_fields = ('prompt', 'guild__name', 'expected_answer__text', 'secondary_answer__text', 'album')
-    autocomplete_fields = ('guild', 'expected_answer', 'secondary_answer')
+    search_fields = ('prompt', 'guild__name', 'expected_answer__text', 'secondary_answer__text', 'album', 'author__username', 'author__discord_name')
+    autocomplete_fields = ('guild', 'expected_answer', 'secondary_answer', 'author')
     filter_horizontal = ('choices',)
 
 

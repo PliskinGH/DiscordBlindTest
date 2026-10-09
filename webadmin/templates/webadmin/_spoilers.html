@@ -1,0 +1,12 @@
+{# The box posts itself: clicking it is what saves the choice. #}
+<form class="d-inline-flex mb-0 align-middle" method="post"
+      action="{% url 'webadmin:spoilers' guild.discord_id %}">
+  {% csrf_token %}
+  <input type="hidden" name="next" value="{% firstof next request.get_full_path %}">
+  <input type="checkbox" class="btn-check" id="id_spoilers" name="spoilers"
+         value="1" autocomplete="off" onchange="this.form.submit()"
+         {% if request.user.show_all_questions %}checked{% endif %}>
+  <label class="btn btn-sm btn-outline-secondary" for="id_spoilers"
+         title="Show every question of this server, not only the ones I authored">Spoilers</label>
+  <noscript><button type="submit" class="btn btn-sm btn-outline-secondary">Save</button></noscript>
+</form>

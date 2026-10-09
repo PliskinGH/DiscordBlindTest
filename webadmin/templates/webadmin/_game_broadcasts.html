@@ -1,0 +1,9 @@
+{# The posts of a game, which the poll of the live part mirrors out of band. #}
+{% if broadcasts %}
+<div class="card mt-4 mb-3">
+  <div class="card-body">
+    <h3 class="h6 mb-2">Recent broadcasts</h3>
+    {% include 'webadmin/_broadcasts.html' with broadcasts=broadcasts next=next %}
+  </div>
+</div>
+{% endif %}

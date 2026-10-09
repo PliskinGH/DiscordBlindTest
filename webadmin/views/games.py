@@ -113,14 +113,16 @@ def _guess(game: Game, pk) -> Guess:
     return guess
 
 
-def _state(request, game, is_host: bool = False) -> dict:
+def _state(request, game, is_host: bool = False, back: str = '') -> dict:
     """Return what the live partial of a game shows, to one player.
 
     ``is_host`` decides whether the host controls are part of it, so the same
-    partial serves the control room and the guess page.
+    partial serves the control room and the guess page. ``back`` is the page a
+    form of the partial comes back to: a poll of the partial is not one, so a
+    poll names the page it is refreshing.
     """
     state = control_state(game, request.user, with_guesses=is_host)
-    back = request.get_full_path()
+    back = back or request.get_full_path()
     if not is_host:
         return {**state, 'is_host': False, 'broadcasts': [], 'retry_back': back}
     return {**state, 'is_host': True, 'broadcasts': game_broadcasts(game),
@@ -176,7 +178,7 @@ class GameView(HostRequired, TemplateView):
                        state=_state(self.request, game, is_host=True),
                        queue_form=QueueForm(
                            action=reverse('webadmin:game_queue', args=args),
-                           game=game),
+                           game=game, viewer=self.request.user),
                        unqueue_form=UnqueueForm(
                            action=reverse('webadmin:game_unqueue', args=args),
                            options=queued_choices(game)),
@@ -199,14 +201,19 @@ class GameStateView(HostRequired, TemplateView):
 
     It is polled every couple of seconds, so it reads the game and nothing
     else: the queue pickers of the page it sits in are not rebuilt here.
+
+    The posts of the game sit below the forms of the control room, and are
+    mirrored there out of band by this very poll.
     """
 
     template_name = 'webadmin/_game_state.html'
 
     def get_context_data(self, **kwargs):
         game = _game(self.request, self.kwargs)
-        return {'guild': game.guild, 'game': game,
-                'state': _state(self.request, game, is_host=True)}
+        return {'guild': game.guild, 'game': game, 'oob_broadcasts': True,
+                'state': _state(self.request, game, is_host=True,
+                                back=reverse('webadmin:game', args=[
+                                    _guild_id(self.kwargs), game.pk]))}
 
 
 class GameLiveView(GuildAccessMixin, TemplateView):
@@ -220,9 +227,11 @@ class GameLiveView(GuildAccessMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         game = _game(self.request, self.kwargs)
-        return {'guild': game.guild, 'game': game,
+        return {'guild': game.guild, 'game': game, 'oob_broadcasts': True,
                 'state': _state(self.request, game,
-                                _hosts(self.request, game))}
+                                _hosts(self.request, game),
+                                back=reverse('webadmin:game_guess', args=[
+                                    _guild_id(self.kwargs), game.pk]))}
 
 
 class SearchView(GuildAccessMixin, AutoResponseView):
@@ -287,7 +296,7 @@ class QueueView(HostRequired, View):
     def post(self, request, *args, **kwargs):
         game = _game(request, kwargs)
         member = _host_of(request, kwargs)
-        form = QueueForm(request.POST, game=game)
+        form = QueueForm(request.POST, game=game, viewer=request.user)
         if not form.is_valid():
             messages.error(request, form_errors(form))
             return _back(game)

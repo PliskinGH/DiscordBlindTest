@@ -448,6 +448,7 @@ class BotSetupTests(NoNetworkMixin, SimpleTestCase):
             'blindtest setup', 'blindtest unqueue', 'library',
             'library answer', 'library answer add', 'library question',
             'library question add', 'library question edit',
+            'library spoilers',
             'library variant', 'library variant add',
             'library variant list', 'library variant remove', 'ping',
             'quiz', 'quiz clear', 'quiz copy', 'quiz end', 'quiz guess',
@@ -583,10 +584,12 @@ class FlowResultTests(NoNetworkMixin, TransactionTestCase):
         add_host(
             guild, user_mention(host.id), FakeMember(42, manage_guild=True))
         game = create_game(guild, 100, host)
+        viewer = Player.objects.from_discord(host)
         Question.objects.create(
             expected_answer=Answer.objects.create(text='Song'),
-            secondary_answer=Answer.objects.create(text='Band'))
-        return question_choices(game)
+            secondary_answer=Answer.objects.create(text='Band'),
+            author=viewer)
+        return question_choices(game, viewer)
 
     def test_picker_choices_cross_the_bridge_without_lazy_queries(self) -> None:
         async def check() -> None:
@@ -607,14 +610,14 @@ class FlowTestCase(NoNetworkMixin, TransactionTestCase):
     def tearDown(self) -> None:
         asyncio.run(run_db(connections.close_all))
 
-    @staticmethod
-    def question(quiz_type: str, text: str, secondary: str) -> Question:
-        """Return a question the quiz type can play."""
+    def question(self, quiz_type: str, text: str, secondary: str) -> Question:
+        """Return a question the quiz type can play, authored by the host."""
         expected = Answer.objects.create(text=text)
         question = Question.objects.create(
             prompt=f'Which song? ({text})' if quiz_type else '',
             expected_answer=expected,
-            secondary_answer=Answer.objects.create(text=secondary))
+            secondary_answer=Answer.objects.create(text=secondary),
+            author=Player.objects.from_discord(FakeMember(42)))
         if quiz_type == QuizType.MULTIPLE_CHOICE:
             question.choices.set([expected,
                                   Answer.objects.create(text=f'No {text}')])
@@ -2040,6 +2043,49 @@ class LibraryQuestionTests(FlowTestCase):
             interaction.followup.sent,
             ['Give the media link as a full http:// or https:// URL.'])
         self.assertFalse(Answer.objects.filter(text='Wonderwall').exists())
+
+
+class LibrarySpoilerTests(FlowTestCase):
+    """The spoilers command decides whose questions a host reads."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.guild = self.prepare_guild()
+        self.viewer = Player.objects.from_discord(FakeMember(42))
+
+    def _spoilers(self, show: bool,
+                  user: FakeMember | None = None) -> FakeInteraction:
+        """Run the spoilers command the way Discord would."""
+        interaction = FakeInteraction()
+        interaction.user = user or FakeMember(42)
+        self._run(LibraryCog.spoilers, interaction, show)
+        return interaction
+
+    def _flag(self) -> bool:
+        """Return the flag the host row carries in the database."""
+        self.viewer.refresh_from_db()
+        return self.viewer.show_all_questions
+
+    def test_a_host_starts_on_the_questions_they_authored(self) -> None:
+        self.assertFalse(self._flag())
+
+    def test_a_host_asks_to_read_every_question(self) -> None:
+        interaction = self._spoilers(True)
+        self.assertTrue(self._flag())
+        self.assertEqual(interaction.followup.sent,
+                         ['You now see every question of this server.'])
+
+    def test_a_host_goes_back_to_the_questions_they_authored(self) -> None:
+        self._spoilers(True)
+        interaction = self._spoilers(False)
+        self.assertFalse(self._flag())
+        self.assertEqual(interaction.followup.sent,
+                         ['You now only see the questions you authored.'])
+
+    def test_a_plain_member_reads_every_question_or_none(self) -> None:
+        interaction = self._spoilers(True, user=FakeMember(43))
+        self.assertTrue(interaction.followup.sent[0].startswith('Only hosts'))
+        self.assertFalse(self._flag())
 
 
 class DeferFirstTests(NoNetworkMixin, SimpleTestCase):

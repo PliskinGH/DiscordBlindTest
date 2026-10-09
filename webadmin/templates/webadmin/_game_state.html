@@ -1,3 +1,34 @@
+{% if state.is_host %}
+<div class="d-flex gap-2 flex-wrap mb-3">
+  {% if state.can_publish %}
+  <form method="post" action="{% url 'webadmin:game_publish' guild.discord_id state.game_pk %}">
+    {% csrf_token %}
+    <button class="btn btn-primary" type="submit">Publish the game</button>
+  </form>
+  {% endif %}
+  {% if state.can_next %}
+  <form method="post" action="{% url 'webadmin:game_next' guild.discord_id state.game_pk %}">
+    {% csrf_token %}
+    <button class="btn btn-primary" type="submit">Open the next round</button>
+  </form>
+  {% endif %}
+  {% if state.can_reveal %}
+  <form method="post" action="{% url 'webadmin:game_reveal' guild.discord_id state.game_pk %}">
+    {% csrf_token %}
+    <button class="btn btn-outline-primary" type="submit">Reveal the round</button>
+  </form>
+  {% endif %}
+  {% if state.can_end %}
+  <form method="post" action="{% url 'webadmin:game_end' guild.discord_id state.game_pk %}">
+    {% csrf_token %}
+    <button class="btn btn-outline-danger" type="submit">End the game</button>
+  </form>
+  {% endif %}
+  {% include 'webadmin/_spoilers.html' with next=state.retry_back %}
+</div>
+{% endif %}
+
+
 {% if state.round %}
 <div class="card mb-3">
   <div class="card-body">
@@ -91,40 +122,6 @@
 </div>
 {% endif %}
 
-{% if state.broadcasts %}
-<div class="card mb-3">
-  <div class="card-body">
-    <h3 class="h6 mb-2">Recent broadcasts</h3>
-    {% include 'webadmin/_broadcasts.html' with broadcasts=state.broadcasts next=state.retry_back %}
-  </div>
-</div>
-{% endif %}
-
-{% if state.is_host %}
-<div class="d-flex gap-2 flex-wrap mb-4">
-  {% if state.can_publish %}
-  <form method="post" action="{% url 'webadmin:game_publish' guild.discord_id state.game_pk %}">
-    {% csrf_token %}
-    <button class="btn btn-primary" type="submit">Publish the game</button>
-  </form>
-  {% endif %}
-  {% if state.can_next %}
-  <form method="post" action="{% url 'webadmin:game_next' guild.discord_id state.game_pk %}">
-    {% csrf_token %}
-    <button class="btn btn-primary" type="submit">Open the next round</button>
-  </form>
-  {% endif %}
-  {% if state.can_reveal %}
-  <form method="post" action="{% url 'webadmin:game_reveal' guild.discord_id state.game_pk %}">
-    {% csrf_token %}
-    <button class="btn btn-outline-primary" type="submit">Reveal the round</button>
-  </form>
-  {% endif %}
-  {% if state.can_end %}
-  <form method="post" action="{% url 'webadmin:game_end' guild.discord_id state.game_pk %}">
-    {% csrf_token %}
-    <button class="btn btn-outline-danger" type="submit">End the game</button>
-  </form>
-  {% endif %}
-</div>
+{% if oob_broadcasts %}
+<div id="game-broadcasts" hx-swap-oob="true">{% include 'webadmin/_game_broadcasts.html' with broadcasts=state.broadcasts next=state.retry_back %}</div>
 {% endif %}

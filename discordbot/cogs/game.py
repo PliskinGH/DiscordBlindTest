@@ -193,10 +193,11 @@ async def question_autocomplete(
     """Offer the questions of this server's library the game did not use yet."""
     try:
         guild = await guild_for(interaction)
+        viewer = await player_for(interaction.user)
         game = await run_db(active_game, guild)
         if game is None:
             return []
-        questions = await run_db(question_choices, game, current)
+        questions = await run_db(question_choices, game, viewer, current)
         return [app_commands.Choice(name=option_label(choice),
                                     value=str(choice['pk']))
                 for choice in questions]
@@ -471,7 +472,8 @@ class GameCog(commands.Cog):
             await interaction.followup.send(str(error), ephemeral=True)
         elif game.is_preparing:
             await self.send_setup_panel(
-                interaction, await run_db(panel_data, game),
+                interaction, await run_db(panel_data, game,
+                                          await player_for(interaction.user)),
                 str(error))
         else:
             await self.send_panel(
@@ -496,7 +498,8 @@ class GameCog(commands.Cog):
                                 state=Game.State.SETUP,
                                 invoking_id=interaction.channel_id,
                                 ping_role_id=ping_role_id)
-            data = await run_db(panel_data, game)
+            data = await run_db(panel_data, game,
+                                await player_for(interaction.user))
             await self.send_setup_panel(interaction, data)
         except PermissionError:
             await interaction.followup.send(
@@ -542,7 +545,8 @@ class GameCog(commands.Cog):
                 return False
             if game.is_preparing:
                 await self.send_setup_panel(
-                    interaction, await run_db(panel_data, game))
+                    interaction, await run_db(
+                        panel_data, game, await player_for(interaction.user)))
             else:
                 await self.send_panel(
                     interaction,
@@ -573,7 +577,8 @@ class GameCog(commands.Cog):
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             result = await run_db(operation, game, interaction.user, *args)
-            data = await run_db(panel_data, game)
+            data = await run_db(panel_data, game,
+                                await player_for(interaction.user))
         except (PermissionError, ValueError) as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return False
@@ -846,7 +851,8 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
-            choices = await run_db(question_choices, game)
+            viewer = await player_for(interaction.user)
+            choices = await run_db(question_choices, game, viewer)
             if not choices:
                 await interaction.followup.send(
                     'No unplayed question left. Add more questions in the admin.',
@@ -877,8 +883,9 @@ class GameCog(commands.Cog):
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
             if not question.strip().isdigit():
+                viewer = await player_for(interaction.user)
                 picked = await picked_pk(
-                    lambda term: run_db(question_choices, game, term),
+                    lambda term: run_db(question_choices, game, viewer, term),
                     question)
                 if picked is None:
                     await interaction.followup.send(

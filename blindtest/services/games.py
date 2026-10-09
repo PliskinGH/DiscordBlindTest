@@ -107,11 +107,15 @@ def game_summary(game: Game) -> dict:
             'ping_role_id': game.ping_role_id}
 
 
-def panel_data(game: Game) -> dict:
-    """Return the display values the setup panel of a game shows."""
+def panel_data(game: Game, viewer: Player | None) -> dict:
+    """Return the display values the setup panel of a game shows.
+
+    ``viewer`` decides which questions of the library the panel offers, since a
+    host sees only their own until they ask for every question of the server.
+    """
     return {**game_summary(game), 'game_id': game.pk,
             'queued': queued_count(game),
-            'choices': question_choices(game),
+            'choices': question_choices(game, viewer),
             'queued_choices': queued_choices(game),
             'games': game_choices(game.guild, game)}
 

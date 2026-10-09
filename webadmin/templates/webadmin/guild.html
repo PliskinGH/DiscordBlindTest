@@ -9,7 +9,7 @@
   <span class="text-body-secondary">no rights here</span>
   {% endif %}
 </p>
-<p class="mb-4">
+<div class="d-flex flex-wrap align-items-center gap-2 mb-4">
   {% if bot_left %}
   <span class="badge text-bg-danger">the bot left this server</span>
   {% if invite_url %}
@@ -26,7 +26,8 @@
   <a class="btn btn-sm btn-outline-secondary"
      href="{% url 'webadmin:settings' guild.discord_id %}">Settings</a>
   {% endif %}
-</p>
+  {% if is_host %}{% include 'webadmin/_spoilers.html' %}{% endif %}
+</div>
 <h2 class="h5">Current game</h2>
 {% if active_game %}
 <p>

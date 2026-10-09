@@ -413,10 +413,11 @@ class QueueForm(_QueueForm):
             attrs={'data-placeholder': _('Search a question')}),
         help_text=_('Questions the quiz type cannot play are skipped.'))
 
-    def __init__(self, *args, game=None, **kwargs) -> None:
+    def __init__(self, *args, game=None, viewer=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         if game is not None:
-            self.fields['questions'].queryset = queueable_questions(game)
+            self.fields['questions'].queryset = queueable_questions(game,
+                                                                    viewer)
             self.fields['questions'].widget.queryset = (
                 self.fields['questions'].queryset)
             self._search_url(game)

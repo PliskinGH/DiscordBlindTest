@@ -9,8 +9,8 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils.translation import gettext as _ 
 from discordcore.cache import LIST_TIMEOUT, remember
-from discordcore.members import DiscordMember
-from discordcore.models import Guild
+from discordcore.members import DiscordMember, can_manage_guild
+from discordcore.models import Guild, Player
 
 from .. import caching
 from .. import matching
@@ -18,7 +18,7 @@ from ..constants import (EDITABLE_FIELDS, LIBRARY_PAGE_SIZE, MAX_CHOICES,
                          MAX_YEAR)
 from ..models import (Answer, AnswerVariant, Game, Question, QuizType,
                       question_problem)
-from .guilds import require_host
+from .guilds import player_of, require_host
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ def add_question(guild: Guild, host_member: DiscordMember, expected_text: str,
     question = Question.objects.create(
         guild=guild, prompt=prompt.strip(), expected_answer=expected,
         secondary_answer=secondary, year=year, album=album.strip(),
-        media_url=media_url)
+        media_url=media_url, author=author_of(host_member))
     given = [text for text in choices if str(text).strip()]
     for text in given:
         question.choices.add(add_answer(guild, host_member, text))
@@ -174,9 +174,18 @@ def add_question(guild: Guild, host_member: DiscordMember, expected_text: str,
             'variants': question.expected_answer.variants.count()}
 
 
+def author_of(host_member: DiscordMember) -> Player:
+    """Return the player row a question of this host is authored by."""
+    return Player.objects.from_discord(host_member)
+
+
 def editable_question(guild: Guild, host_member: DiscordMember,
                       pk: int | str) -> Question:
-    """Return a question of the guild's own library, host-checked."""
+    """Return a question of the guild's own library, host-checked.
+
+    A host changes their own questions; an administrator of the server changes
+    every one, the authorless ones included.
+    """
     require_host(guild, host_member)
     number = str(pk).strip()
     question = None
@@ -186,6 +195,11 @@ def editable_question(guild: Guild, host_member: DiscordMember,
                     .filter(guild=guild, pk=int(number)).first())
     if question is None:
         raise ValueError(_("This question is not in this server's library."))
+    author = player_of(host_member)
+    authored = author is not None and question.author_id == author.pk
+    if not authored and not can_manage_guild(host_member):
+        raise PermissionError(_("Only the author of this question can change "
+                                "it. Ask an administrator of the server."))
     return question
 
 
@@ -343,10 +357,12 @@ def _apply_field(guild: Guild, host_member: DiscordMember, question: Question,
 def question_option(question: Question, guild: Guild | None = None) -> dict:
     """Return how a host picks a question: its pk, its label and its media.
     ``guild`` marks the questions of that guild's own library, as opposed to the
-    ones of the global library every guild plays.
+    ones of the global library every guild plays. ``author`` is the pk the
+    spoiler rule is read with, so one cached list serves every viewer.
     """
     return {'pk': question.pk, 'label': question_line(question, with_answer=True),
             'media': bool(question.media_url),
+            'author': question.author_id,
             'own': guild is not None and question.guild_id == guild.pk}
 
 
@@ -357,17 +373,40 @@ def require_question_fits(question: Question, quiz_type: str) -> None:
         raise ValueError(problem)
 
 
-def _visible_questions(guild: Guild):
-    """Return the questions a guild plays, its own and the global ones."""
+def viewer_questions(viewer: Player | None) -> Q:
+    """Return the questions a viewer may read in the host panels.
+
+    Only what they authored, unless they asked to see every question of the
+    server; a question nobody authored is a spoiler like any other, and a
+    caller that names no viewer reads none of them.
+    """
+    if viewer is None:
+        return Q(pk__in=[])
+    if viewer.show_all_questions:
+        return Q()
+    return Q(author=viewer)
+
+
+def _all_questions(guild: Guild):
+    """Return every question a guild plays, its own and the global ones."""
     return (Question.objects
             .select_related('expected_answer', 'secondary_answer')
             .filter(Q(guild__isnull=True) | Q(guild=guild))
             .order_by('-created_at'))
 
 
+def _visible_questions(guild: Guild, viewer: Player | None):
+    """Return the questions of the libraries a guild plays that one may read."""
+    return _all_questions(guild).filter(viewer_questions(viewer))
+
+
 def _render_library_options(guild: Guild) -> list[dict] | bool:
-    """Return the options of the libraries a guild plays, False when too many."""
-    rows = list(_visible_questions(guild)[:caching.LIBRARY_CACHE_LIMIT + 1])
+    """Return the options of the libraries a guild plays, False when too many.
+
+    Every question is rendered, with its author; each viewer only reads their
+    own slice of the one cached list.
+    """
+    rows = list(_all_questions(guild)[:caching.LIBRARY_CACHE_LIMIT + 1])
     if len(rows) > caching.LIBRARY_CACHE_LIMIT:
         return False
     return [question_option(question, guild) for question in rows]
@@ -387,28 +426,39 @@ def _used_question_pks(game: Game) -> tuple[int, ...]:
                     LIST_TIMEOUT)
 
 
-def question_choices(game: Game, text: str = '',
+def _shown_option(option: dict, viewer: Player | None) -> bool:
+    """Return whether a rendered option is one the viewer may read."""
+    if viewer is None:
+        return False
+    if viewer.show_all_questions:
+        return True
+    return option['author'] == viewer.pk
+
+
+def question_choices(game: Game, viewer: Player | None, text: str = '',
                      limit: int = MAX_CHOICES) -> list[dict]:
     """Return the pk and label of questions the game did not use yet."""
     options = _library_options(game.guild)
     if options is None:
-        return _query_question_choices(game, text, limit)
+        return _query_question_choices(game, viewer, text, limit)
     used = _used_question_pks(game)
     wanted = text.strip().casefold()
     return [option for option in options
             if option['pk'] not in used
+            and _shown_option(option, viewer)
             and (not wanted or wanted in option['label'].casefold())][:limit]
 
 
-def queueable_questions(game: Game):
+def queueable_questions(game: Game, viewer: Player | None):
     """Return the questions a game has not queued or played yet."""
-    return _visible_questions(game.guild).exclude(
+    return _visible_questions(game.guild, viewer).exclude(
         pk__in=game.rounds.values('question'))
 
 
-def _query_question_choices(game: Game, text: str, limit: int) -> list[dict]:
+def _query_question_choices(game: Game, viewer: Player | None, text: str,
+                            limit: int) -> list[dict]:
     """Return the unplayed options of a game straight from the database."""
-    queryset = queueable_questions(game)
+    queryset = queueable_questions(game, viewer)
     text = text.strip()
     if text:
         queryset = queryset.filter(
@@ -425,21 +475,23 @@ def question_by_pk(pk: int) -> Question:
             .get(pk=pk))
 
 
-def library_choices(guild: Guild, text: str = '',
+def library_choices(guild: Guild, viewer: Player | None, text: str = '',
                     limit: int = MAX_CHOICES) -> list[dict]:
     """Return the questions of a guild's own library, as picker options."""
     options = _library_options(guild)
     if options is None:
-        return _query_library_choices(guild, text, limit)
+        return _query_library_choices(guild, viewer, text, limit)
     wanted = text.strip().casefold()
     return [option for option in options
             if option['own']
+            and _shown_option(option, viewer)
             and (not wanted or wanted in option['label'].casefold())][:limit]
 
 
-def _query_library_choices(guild: Guild, text: str, limit: int) -> list[dict]:
+def _query_library_choices(guild: Guild, viewer: Player | None, text: str,
+                           limit: int) -> list[dict]:
     """Return the options of a guild's own library straight from the database."""
-    queryset = _visible_questions(guild).filter(guild=guild)
+    queryset = _visible_questions(guild, viewer).filter(guild=guild)
     text = text.strip()
     if text:
         queryset = queryset.filter(
@@ -457,6 +509,8 @@ def question_row(question: Question) -> dict:
             'answer': question.expected_answer.text,
             'artist': (question.secondary_answer.text
                        if question.secondary_answer else ''),
+            'author': (question.author.discord_name or question.author.username
+                       if question.author else ''),
             'year': question.year, 'album': question.album,
             'media_url': question.media_url,
             'variants': [variant.text
@@ -464,12 +518,13 @@ def question_row(question: Question) -> dict:
             'choices': [choice.text for choice in question.choices.all()]}
 
 
-def own_questions(guild: Guild, text: str = '',
+def own_questions(guild: Guild, viewer: Player | None, text: str = '',
                   limit: int = LIBRARY_PAGE_SIZE) -> list[dict]:
     """Return the questions of a guild's own library, to fill and read."""
     queryset = (Question.objects
                 .filter(guild=guild)
-                .select_related('expected_answer', 'secondary_answer')
+                .filter(viewer_questions(viewer))
+                .select_related('expected_answer', 'secondary_answer', 'author')
                 .prefetch_related('choices', 'expected_answer__variants')
                 .order_by('expected_answer__text', 'pk'))
     wanted = text.strip()
@@ -480,16 +535,24 @@ def own_questions(guild: Guild, text: str = '',
     return [question_row(question) for question in queryset[:limit]]
 
 
-def unused_questions(guild: Guild,
+def unused_questions(guild: Guild, viewer: Player | None,
                      limit: int = LIBRARY_PAGE_SIZE) -> list[dict]:
     """Return the questions of a guild's library that no game has played."""
     queryset = (Question.objects
                 .filter(guild=guild, rounds__isnull=True)
-                .select_related('expected_answer', 'secondary_answer')
+                .filter(viewer_questions(viewer))
+                .select_related('expected_answer', 'secondary_answer', 'author')
                 .prefetch_related('expected_answer__variants')
                 .order_by('expected_answer__text', 'pk')
                 .distinct())
     return [question_row(question) for question in queryset[:limit]]
+
+
+def set_show_all_questions(viewer: Player, show: bool) -> Player:
+    """Read every question of a server as the viewer, or only their own."""
+    viewer.show_all_questions = bool(show)
+    viewer.save(update_fields=['show_all_questions'])
+    return viewer
 
 
 def unused_answers(guild: Guild,

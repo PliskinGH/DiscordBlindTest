@@ -24,4 +24,7 @@
 {% if not state.round.guessed %}
 {% crispy form %}
 {% endif %}
+
+{# The poll of the live part mirrors the posts of the game here, out of band. #}
+<div id="game-broadcasts">{% include 'webadmin/_game_broadcasts.html' with broadcasts=state.broadcasts next=state.retry_back %}</div>
 {% endblock %}

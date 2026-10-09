@@ -82,6 +82,10 @@ class Player(AbstractUser):
     discord_name = models.CharField(_('Discord username'), max_length=200,
                                     unique=True, blank=True, null=True,
                                     default=None)
+    show_all_questions = models.BooleanField(
+        _('show all questions'), default=False,
+        help_text=_('See every question of a server in the host panels, not '
+                    'only the ones authored here.'))
 
     objects = PlayerManager()
 

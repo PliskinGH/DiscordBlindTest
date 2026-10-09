@@ -37,10 +37,12 @@ from .services.guilds import (add_host, clear_default_channel,
                               set_default_ping_role)
 from .services.library import (add_answer, add_question, add_variant,
                                edit_question, editable_question,
-                               library_choices, question_by_pk,
+                               library_choices, own_questions,
+                               question_by_pk,
                                question_choices, question_line,
                                remove_answer, remove_question,
-                               remove_variant, set_variants,
+                               remove_variant, set_show_all_questions,
+                               set_variants,
                                split_answers, unused_answers,
                                unused_questions, variants_of)
 from .services.rounds import (create_round, current_round,
@@ -108,9 +110,11 @@ class GameTestCase(NoNetworkMixin, TestCase):
         self.answer = Answer.objects.create(text='Song')
         self.artist = Answer.objects.create(text='Band')
         self.question = Question.objects.create(expected_answer=self.answer,
-                                                secondary_answer=self.artist)
+                                                secondary_answer=self.artist,
+                                                author=self.host_player)
         self.other_question = Question.objects.create(
-            expected_answer=Answer.objects.create(text='Other'))
+            expected_answer=Answer.objects.create(text='Other'),
+            author=self.host_player)
 
     def create_game(self, guild: Guild | None = None,
                    host_member: FakeMember | None = None) -> Game:
@@ -979,7 +983,7 @@ class LibraryRemovalTests(GameTestCase):
         super().setUp()
         self.own_answer = self.guild.answers.create(text='Own')
         self.question = self.guild.questions.create(
-            expected_answer=self.own_answer)
+            expected_answer=self.own_answer, author=self.host_player)
         add_host(self.other_guild, user_mention(42),
                           FakeMember(42, manage_guild=True))
 
@@ -1037,19 +1041,19 @@ class LibraryRemovalTests(GameTestCase):
 
     def test_the_unused_lists_name_what_can_go(self):
         self.assertEqual(
-            [row['pk'] for row in unused_questions(self.guild)],
+            [row['pk'] for row in unused_questions(self.guild, self.host_player)],
             [self.question.pk])
         self.assertEqual(unused_answers(self.guild), [])
 
     def test_a_played_question_leaves_the_unused_list(self):
         game = self.create_game()
         open_round(game, self.host, self.question)
-        self.assertEqual(unused_questions(self.guild), [])
+        self.assertEqual(unused_questions(self.guild, self.host_player), [])
         self.assertEqual(unused_answers(self.guild), [])
 
     def test_a_removed_question_leaves_its_answer_behind(self):
         remove_question(self.guild, self.host, self.question.pk)
-        self.assertEqual(unused_questions(self.guild), [])
+        self.assertEqual(unused_questions(self.guild, self.host_player), [])
         self.assertEqual(
             [answer['text'] for answer in unused_answers(self.guild)],
             ['Own'])
@@ -1176,39 +1180,46 @@ class LibraryTests(GameTestCase):
         self.assertIsInstance(result['pk'], int)
         self.assertEqual(result['label'], 'Song (Band)')
 
+    def test_add_question_records_the_host_that_authored_it(self):
+        question = Question.objects.get(
+            pk=add_question(self.guild, self.host, 'Song')['pk'])
+        self.assertEqual(question.author, self.host_player)
+
     def test_question_choices_carry_plain_labels(self):
         Question.objects.create(
-            guild=self.guild,
+            guild=self.guild, author=self.host_player,
             expected_answer=Answer.objects.create(text='Morning Bell'),
             secondary_answer=Answer.objects.create(text='Radiohead'))
-        [choice] = question_choices(self.game)
+        [choice] = question_choices(self.game, self.host_player)
         self.assertEqual(choice['label'], 'Morning Bell (Radiohead)')
 
 
     def test_question_choices_offer_global_and_guild_questions(self):
         global_question = Question.objects.create(
+            author=self.host_player,
             expected_answer=Answer.objects.create(text='Global'))
         own = Question.objects.create(
-            guild=self.guild, expected_answer=Answer.objects.create(text='Own'))
+            guild=self.guild, author=self.host_player,
+            expected_answer=Answer.objects.create(text='Own'))
         Question.objects.create(
             guild=self.other_guild,
             expected_answer=Answer.objects.create(text='Foreign'))
-        choices = question_choices(self.game)
+        choices = question_choices(self.game, self.host_player)
         self.assertEqual({choice['pk'] for choice in choices},
                          {global_question.pk, own.pk})
 
     def test_question_choices_skip_played_questions(self):
-        self.assertEqual(question_choices(self.game), [])
+        self.assertEqual(question_choices(self.game, self.host_player), [])
 
     def test_question_choices_search_prompt_and_answers(self):
         own = Question.objects.create(
-            guild=self.guild, prompt='Guess the album',
+            guild=self.guild, prompt='Guess the album', author=self.host_player,
             expected_answer=Answer.objects.create(text='OK Computer'))
         Question.objects.create(
             expected_answer=Answer.objects.create(text='Wonderwall'))
-        found = question_choices(self.game, 'album')
+        found = question_choices(self.game, self.host_player, 'album')
         self.assertEqual([choice['pk'] for choice in found], [own.pk])
-        found = question_choices(self.game, 'computer')
+        found = question_choices(self.game, self.host_player, 'computer')
         self.assertEqual([choice['pk'] for choice in found], [own.pk])
 
     def test_pick_question_draws_a_global_question(self):
@@ -1346,6 +1357,47 @@ class QuestionEditTests(GameTestCase):
             editable_question(self.guild, self.host,
                                        self.question.pk)
 
+    def _question_of_another_host(self, author=None) -> Question:
+        """Return a question of this server another host authored."""
+        add_host(self.guild, user_mention(43), self.admin)
+        return Question.objects.create(
+            guild=self.guild,
+            expected_answer=Answer.objects.create(text='Theirs'),
+            author=author)
+
+    def test_a_host_does_not_change_the_question_of_another_host(self):
+        theirs = self._question_of_another_host(self.player_row)
+        with self.assertRaises(PermissionError):
+            edit_question(self.guild, self.host, theirs.pk,
+                                   album='Album')
+        theirs.refresh_from_db()
+        self.assertEqual(theirs.album, '')
+
+    def test_a_host_does_not_change_a_question_nobody_authored(self):
+        theirs = self._question_of_another_host()
+        with self.assertRaises(PermissionError):
+            editable_question(self.guild, self.host, theirs.pk)
+
+    def test_an_administrator_changes_the_question_of_another_host(self):
+        theirs = self._question_of_another_host(self.player_row)
+        edit_question(self.guild, self.admin, theirs.pk,
+                               album='Album')
+        theirs.refresh_from_db()
+        self.assertEqual(theirs.album, 'Album')
+
+    def test_an_administrator_changes_a_question_nobody_authored(self):
+        theirs = self._question_of_another_host()
+        edit_question(self.guild, self.admin, theirs.pk,
+                               album='Album')
+        theirs.refresh_from_db()
+        self.assertEqual(theirs.album, 'Album')
+
+    def test_a_host_does_not_remove_the_question_of_another_host(self):
+        theirs = self._question_of_another_host(self.player_row)
+        with self.assertRaises(PermissionError):
+            remove_question(self.guild, self.host, theirs.pk)
+        self.assertTrue(Question.objects.filter(pk=theirs.pk).exists())
+
     def test_a_question_that_is_gone_is_reported(self):
         for pk in (self.own.pk + 100, 'soon'):
             with self.subTest(pk=pk):
@@ -1465,20 +1517,104 @@ class QuestionEditTests(GameTestCase):
         Question.objects.create(
             expected_answer=Answer.objects.create(text='Global'))
         self.assertEqual(
-            [choice['pk'] for choice in library_choices(self.guild)],
+            [choice['pk'] for choice in library_choices(self.guild, self.host_player)],
             [self.own.pk])
 
     def test_library_choices_carry_the_label_and_the_media(self):
-        [choice] = library_choices(self.guild)
+        [choice] = library_choices(self.guild, self.host_player)
         self.assertEqual(choice['label'], 'Guess it — answer: Song (Band)')
         self.assertTrue(choice['media'])
 
     def test_library_choices_search_the_prompt_and_the_answers(self):
         self.assertEqual(
-            [choice['pk'] for choice in library_choices(self.guild,
-                                                                 'band')],
+            [choice['pk']
+             for choice in library_choices(self.guild, self.host_player,
+                                           'band')],
             [self.own.pk])
-        self.assertEqual(library_choices(self.guild, 'unknown'), [])
+        self.assertEqual(library_choices(self.guild, self.host_player,
+                                         'unknown'), [])
+
+
+class QuestionSpoilerTests(GameTestCase):
+    """A host reads their own questions, and the ones they asked to spoil."""
+
+    def setUp(self):
+        super().setUp()
+        self.game = self.create_game()
+        # A second host of the server, and what they authored.
+        add_host(self.guild, user_mention(43), self.admin)
+        self.mine = Question.objects.create(
+            guild=self.guild,
+            expected_answer=Answer.objects.create(text='Mine'),
+            author=self.host_player)
+        self.theirs = Question.objects.create(
+            guild=self.guild,
+            expected_answer=Answer.objects.create(text='Theirs'),
+            author=self.player_row)
+        self.anonymous = Question.objects.create(
+            guild=self.guild,
+            expected_answer=Answer.objects.create(text='Anonymous'))
+
+    def _read_pks(self) -> set[int]:
+        """Return the questions of the server's library a host may read."""
+        return {row['pk'] for row in own_questions(self.guild, self.host_player)}
+
+    def test_a_host_reads_their_own_questions(self):
+        self.assertEqual(self._read_pks(), {self.mine.pk})
+
+    def test_a_host_reads_no_question_of_another_host(self):
+        self.assertNotIn(self.theirs.pk, self._read_pks())
+
+    def test_a_question_nobody_authored_is_hidden_like_any_other(self):
+        self.assertNotIn(self.anonymous.pk, self._read_pks())
+
+    def test_the_picker_offers_no_question_of_another_host(self):
+        self.assertEqual(
+            {choice['pk']
+             for choice in library_choices(self.guild, self.host_player)},
+            {self.mine.pk})
+
+    def test_the_game_picker_offers_no_question_of_another_host(self):
+        offered = {choice['pk']
+                   for choice in question_choices(self.game, self.host_player)}
+        self.assertIn(self.mine.pk, offered)
+        self.assertNotIn(self.theirs.pk, offered)
+        self.assertNotIn(self.anonymous.pk, offered)
+
+    def test_a_caller_without_a_viewer_offers_nothing(self):
+        # Naming no viewer is not the same as asking for every question.
+        self.assertEqual(question_choices(self.game, None), [])
+        self.assertEqual(library_choices(self.guild, None), [])
+        self.assertEqual(own_questions(self.guild, None), [])
+
+    def test_asking_for_every_question_shows_them_on_the_cached_picker(self):
+        # A library's options are cached once for the server, so the viewer's
+        # choice is what filters the cached list, not a second read.
+        library_choices(self.guild, self.host_player)
+        set_show_all_questions(self.host_player, True)
+        with self.assertNumQueries(0):
+            offered = {choice['pk'] for choice
+                       in library_choices(self.guild, self.host_player)}
+        self.assertEqual(offered,
+                         {self.mine.pk, self.theirs.pk, self.anonymous.pk})
+
+    def test_every_question_of_the_server_is_then_readable(self):
+        set_show_all_questions(self.host_player, True)
+        self.assertEqual(self._read_pks(),
+                         {self.mine.pk, self.theirs.pk, self.anonymous.pk})
+        self.assertEqual(len(unused_questions(self.guild, self.host_player)), 3)
+
+    def test_the_choice_lasts_on_the_player_row(self):
+        set_show_all_questions(self.host_player, False)
+        self.host_player.refresh_from_db()
+        self.assertFalse(self.host_player.show_all_questions)
+
+    def test_a_host_may_queue_a_question_they_do_not_read(self):
+        # Seeing a question is not what allows a game to play it.
+        queue_questions(self.game, self.host, [self.theirs.pk])
+        self.assertEqual(
+            [round_.question_id for round_ in self.game.rounds.all()],
+            [self.theirs.pk])
 
 
 class QuizTypeTests(GameTestCase):
@@ -1685,7 +1821,7 @@ class SetupStateTests(GameTestCase):
         """Create a game awaiting publication and return its panel data."""
         game = create_game(self.guild, 100, self.host,
                                     state=Game.State.SETUP, **kwargs)
-        return panel_data(game)
+        return panel_data(game, self.host_player)
 
     def game_in_setup(self, **kwargs) -> Game:
         return Game.objects.get(pk=self.setup(**kwargs)['game_id'])
@@ -1863,47 +1999,50 @@ class CacheTests(GameTestCase):
 
     def test_the_question_options_are_read_once(self):
         game = self.create_game()
-        question_choices(game)
+        question_choices(game, self.host_player)
         with self.assertNumQueries(0):
-            self.assertTrue(question_choices(game))
+            self.assertTrue(question_choices(game, self.host_player))
 
     def test_the_question_options_search_the_labels(self):
         game = self.create_game()
-        found = question_choices(game, 'other')
+        found = question_choices(game, self.host_player, 'other')
         self.assertEqual([choice['label'] for choice in found], ['Other'])
 
     def test_a_new_question_is_offered_at_once(self):
         game = self.create_game()
-        question_choices(game)
+        question_choices(game, self.host_player)
         with self.captureOnCommitCallbacks(execute=True):
             add_question(self.guild, self.host, 'Fresh Song')
-        labels = [choice['label'] for choice in question_choices(game)]
+        labels = [choice['label']
+                  for choice in question_choices(game, self.host_player)]
         self.assertTrue(any('Fresh Song' in label for label in labels))
 
     def test_an_edited_answer_is_seen_at_once(self):
         game = self.create_game()
         own = Question.objects.get(
             pk=add_question(self.guild, self.host, 'Song')['pk'])
-        question_choices(game)
+        question_choices(game, self.host_player)
         with self.captureOnCommitCallbacks(execute=True):
             edit_question(self.guild, self.host, own.pk,
                                    answer='Renamed')
-        labels = [choice['label'] for choice in question_choices(game)]
+        labels = [choice['label']
+                  for choice in question_choices(game, self.host_player)]
         self.assertTrue(any('Renamed' in label for label in labels))
 
     def test_a_played_question_leaves_the_picker(self):
         game = self.create_game()
-        played = question_choices(game)[0]['pk']
+        played = question_choices(game, self.host_player)[0]['pk']
         with self.captureOnCommitCallbacks(execute=True):
             open_round(game, self.host,
                                  question_by_pk(played))
-        left = [choice['pk'] for choice in question_choices(game)]
+        left = [choice['pk']
+                for choice in question_choices(game, self.host_player)]
         self.assertNotIn(played, left)
 
     def test_the_library_options_are_read_once(self):
-        library_choices(self.guild)
+        library_choices(self.guild, self.host_player)
         with self.assertNumQueries(0):
-            self.assertEqual(library_choices(self.guild), [])
+            self.assertEqual(library_choices(self.guild, self.host_player), [])
 
     def test_the_queued_options_are_read_once(self):
         game = self.create_game()
@@ -1926,13 +2065,15 @@ class CacheTests(GameTestCase):
         create_round(queued, self.host, self.question, index=1)
         queued_choices(queued)
         self.assertEqual(queued_choices(other), [])
-        offered = [choice['pk'] for choice in question_choices(other)]
+        offered = [choice['pk']
+                   for choice in question_choices(other, self.host_player)]
         self.assertIn(self.question.pk, offered)
 
     def test_a_library_too_large_to_cache_falls_back_to_the_database(self):
         game = self.create_game()
         with mock.patch.object(caching, 'LIBRARY_CACHE_LIMIT', 1):
-            pks = [choice['pk'] for choice in question_choices(game)]
+            pks = [choice['pk']
+                   for choice in question_choices(game, self.host_player)]
         self.assertIn(self.question.pk, pks)
         self.assertIn(self.other_question.pk, pks)
 

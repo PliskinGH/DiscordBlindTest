@@ -101,6 +101,11 @@ class Question(models.Model):
     media_url = models.URLField(_('media URL'), blank=True)
     album = models.CharField(_('album'), max_length=200, blank=True)
     year = models.PositiveSmallIntegerField(_('year'), blank=True, null=True)
+    author = models.ForeignKey(
+        'discordcore.Player', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='authored_questions', verbose_name=_('author'),
+        help_text=_('Only the author sees this question in the host panels, '
+                    'unless they asked to see every question of the server.'))
     created_at = models.DateTimeField(_('created at'), auto_now_add=True)
 
     class Meta:

@@ -7,13 +7,14 @@ from .models import Guild, Host, Player
 
 @admin.register(Player)
 class PlayerAdmin(UserAdmin):
-    list_display = ('username', 'discord_name', 'is_staff')
+    list_display = ('username', 'discord_name', 'is_staff', 'show_all_questions')
     list_filter = ('is_active', 'is_staff', 'is_superuser')
     search_fields = ('username', 'discord_name', 'discord_user_id', 'email')
     fieldsets = (
         (None, {'fields': ('username', 'password')}),
         (_('Personal info'), {'fields': ('email', 'discord_user_id',
-                                         'discord_name')}),
+                                         'discord_name',
+                                         'show_all_questions')}),
         (_('Permissions'), {'fields': ('is_active', 'is_staff', 'is_superuser',
                                        'groups', 'user_permissions')}),
         (_('Important dates'), {'fields': ('last_login', 'date_joined')}),

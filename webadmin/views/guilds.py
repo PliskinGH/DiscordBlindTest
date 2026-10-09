@@ -14,6 +14,7 @@ from blindtest.services.broadcasts import (retry_broadcast,
                                             unfinished_broadcasts)
 from blindtest.services.games import played_game
 from blindtest.services.guilds import add_guild, is_host
+from blindtest.services.library import set_show_all_questions
 
 from .. import discord_api
 from ..permissions import (GuildAccessMixin, HostRequired, bot_left,
@@ -77,6 +78,27 @@ class RetryBroadcastView(HostRequired, View):
             messages.error(request, 'That post is gone.')
         else:
             messages.success(request, 'The post is queued again.')
+        return redirect(_back(request, guild_id))
+
+
+class SpoilersView(HostRequired, View):
+    """Read every question of this server as a host, or only their own.
+
+    The choice is the player's, not the server's, so it holds wherever they
+    host; the server is only what the page they left was showing.
+    """
+
+    http_method_names = ['post', 'options']
+
+    def post(self, request, *args, **kwargs):
+        guild_id = int(kwargs['discord_guild_id'])
+        require_guild(guild_id)
+        show = request.POST.get('spoilers') == '1'
+        set_show_all_questions(request.user, show)
+        messages.success(
+            request,
+            'You now see every question of this server.' if show else
+            'You now only see the questions you authored.')
         return redirect(_back(request, guild_id))
 
 

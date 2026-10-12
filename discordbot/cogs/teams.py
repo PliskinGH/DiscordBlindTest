@@ -9,11 +9,11 @@ from discord.ext import commands
 from blindtest.services.games import active_game
 from blindtest.services.teams import (add_team, assign_player, copyable_teams,
                                       copy_team_by_pk, remove_player,
-                                      remove_team, rename_team,
-                                      team_by_pk, team_choices, teams_of)
+                                      remove_team, rename_team, team_by_pk,
+                                      team_choices, teams_of)
 
+from ..choices import as_choices, resolve_pk
 from ..db import guild_for, player_for, run_db
-from ..ui import option_label, picked_pk
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,7 @@ async def team_autocomplete(
         if game is None:
             return []
         teams = await run_db(team_choices, game, current)
-        return [app_commands.Choice(name=option_label(team),
-                                    value=str(team['pk']))
-                for team in teams]
+        return as_choices(teams)
     except Exception:
         logger.exception('Failed to offer team choices')
         return []
@@ -55,9 +53,7 @@ async def copyable_team_autocomplete(
         guild = await guild_for(interaction)
         game = await run_db(active_game, guild)
         teams = await run_db(copyable_teams, guild, game, current)
-        return [app_commands.Choice(name=option_label(team),
-                                    value=str(team['pk']))
-                for team in teams]
+        return as_choices(teams)
     except Exception:
         logger.exception('Failed to offer the teams to copy')
         return []
@@ -88,12 +84,9 @@ class TeamsCog(commands.Cog):
     async def _team_of(self, interaction: discord.Interaction, wanted: str):
         """Return the team a command option names: by pk, then by label."""
         game = await self._game_of(interaction)
-        if not wanted.strip().isdigit():
-            picked = await picked_pk(
-                lambda term: run_db(team_choices, game, term), wanted)
-            if picked is not None:
-                return await run_db(team_by_pk, game, picked)
-        return await run_db(team_by_pk, game, wanted)
+        picked = await resolve_pk(
+            lambda term: run_db(team_choices, game, term), wanted)
+        return await run_db(team_by_pk, game, picked)
 
     async def _respond(self, interaction: discord.Interaction,
                        work, failing: str) -> None:
@@ -161,7 +154,7 @@ class TeamsCog(commands.Cog):
         player = await player_for(member)
         await run_db(assign_player if adding else remove_player,
                      named, interaction.user, player)
-        label = player.discord_name or player.username
+        label = player.display_name
         return (f'{label} {"joins" if adding else "leaves"} {named.name}.')
 
     @group.command(name='copy',
@@ -178,14 +171,15 @@ class TeamsCog(commands.Cog):
     async def _copy(self, interaction: discord.Interaction, team: str) -> str:
         """Copy the team and return the note to send back."""
         game = await self._game_of(interaction)
+        guild = None
         if not team.strip().isdigit():
             guild = await guild_for(interaction)
-            picked = await picked_pk(
-                lambda term: run_db(copyable_teams, guild, game, term), team)
-            if picked is None:
-                raise ValueError('This team no longer exists.')
-            team = picked
-        copied = await run_db(copy_team_by_pk, game, interaction.user, team)
+        picked = await resolve_pk(
+            lambda term: run_db(copyable_teams, guild, game, term), team)
+        if picked is None:
+            raise ValueError('This team no longer exists.')
+        copied = await run_db(
+            copy_team_by_pk, game, interaction.user, picked)
         return f'{copied.name} copied, with its members.'
 
     @group.command(name='rename', description='Give a team another name.')

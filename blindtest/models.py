@@ -129,6 +129,19 @@ class Question(models.Model):
             return f'{self.expected_answer.text} ({self.secondary_answer.text})'
         return self.expected_answer.text
 
+    @property
+    def display_name(self) -> str:
+        """Return how a host identifies the question: prompt, or answer."""
+        return self.prompt.strip() or self.answer_text
+
+    @property
+    def full_display(self) -> str:
+        """Return the prompt with the answer, for a host to tell apart."""
+        prompt = self.prompt.strip()
+        if not prompt:
+            return self.answer_text
+        return f'{prompt} — answer: {self.answer_text}'
+
 
 def question_problem(question: Question, quiz_type: str) -> str | None:
     """Return why a quiz type cannot play a question, or None when it can."""
@@ -212,6 +225,11 @@ class Game(models.Model):
         """Return the name of the game, defaulting to '<type> #<number>'."""
         return self.name or f'{QuizType(self.type).display_name} #{self.pk}'
 
+    def full_display(self, questions: int) -> str:
+        """Return the name with its size and state, to tell games apart."""
+        return (f'{self.display_name} — {questions} question(s) — '
+                f'{self.State(self.state).display_name}')
+
 
 class Team(models.Model):
     """A team guessing together during one game."""
@@ -235,6 +253,11 @@ class Team(models.Model):
 
     def __str__(self) -> str:
         return f'{self.name} ({self.game})'
+
+    @property
+    def display_name(self) -> str:
+        """Return the full name, game included, to tell teams apart."""
+        return f'{self.game.display_name} — {self.name}'
 
 
 class Round(models.Model):

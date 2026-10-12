@@ -30,10 +30,10 @@ from blindtest.services.library import question_by_pk, question_choices
 from blindtest.services.rounds import create_round, current_round
 
 from .. import embeds
+from ..choices import as_choices, resolve_pk
 from ..db import guild_for, player_for, run_db
 from ..ui import (ANSWER_TITLE, GamePanel, GuessFormPanel, GuessModal,
-                  HostPanel, QueuePanel, SetupPanel, disabled, option_label,
-                  picked_pk)
+                  HostPanel, QueuePanel, SetupPanel, disabled)
 
 logger = logging.getLogger(__name__)
 
@@ -198,9 +198,7 @@ async def question_autocomplete(
         if game is None:
             return []
         questions = await run_db(question_choices, game, viewer, current)
-        return [app_commands.Choice(name=option_label(choice),
-                                    value=str(choice['pk']))
-                for choice in questions]
+        return as_choices(questions)
     except Exception:
         logger.exception('Failed to offer question choices')
         return []
@@ -216,9 +214,7 @@ async def queued_autocomplete(
         if game is None:
             return []
         queued = await run_db(queued_choices, game, current)
-        return [app_commands.Choice(name=option_label(choice),
-                                    value=str(choice['pk']))
-                for choice in queued]
+        return as_choices(queued)
     except Exception:
         logger.exception('Failed to offer queued choices')
         return []
@@ -231,9 +227,7 @@ async def game_autocomplete(
     try:
         guild = await guild_for(interaction)
         games = await run_db(game_choices, guild, None, current)
-        return [app_commands.Choice(name=option_label(choice),
-                                    value=str(choice['pk']))
-                for choice in games]
+        return as_choices(games)
     except Exception:
         logger.exception('Failed to offer game choices')
         return []
@@ -628,7 +622,7 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         guild = await guild_for(interaction)
         game = await run_db(active_game, guild)
-        picked = (await picked_pk(
+        picked = (await resolve_pk(
             lambda term: run_db(game_choices, guild, game, term), source)
             if game is not None else None)
         if picked is None:
@@ -882,16 +876,17 @@ class GameCog(commands.Cog):
                 await interaction.followup.send(
                     NO_QUIZ_RUNNING, ephemeral=True)
                 return False
+            viewer = None
             if not question.strip().isdigit():
                 viewer = await player_for(interaction.user)
-                picked = await picked_pk(
-                    lambda term: run_db(question_choices, game, viewer, term),
-                    question)
-                if picked is None:
-                    await interaction.followup.send(
-                        'That question no longer exists.', ephemeral=True)
-                    return False
-                question = str(picked)
+            picked = await resolve_pk(
+                lambda term: run_db(question_choices, game, viewer, term),
+                question)
+            if picked is None:
+                await interaction.followup.send(
+                    'That question no longer exists.', ephemeral=True)
+                return False
+            question = str(picked)
             chosen = await run_db(question_by_pk, int(question))
             result = await run_db(create_round, game,
                                   interaction.user, chosen, quiz_type)
@@ -924,7 +919,7 @@ class GameCog(commands.Cog):
         await self.defer(interaction)
         guild = await guild_for(interaction)
         game = await run_db(active_game, guild)
-        picked = (await picked_pk(
+        picked = (await resolve_pk(
             lambda term: run_db(queued_choices, game, term), question)
             if game is not None else None)
         if picked is None:

@@ -18,11 +18,6 @@ from .guilds import require_host
 logger = logging.getLogger(__name__)
 
 
-def player_label(player: Player) -> str:
-    """Return how a player is shown in a team."""
-    return player.discord_name or player.username
-
-
 def _require_editable(game: Game) -> None:
     """Refuse a change to the teams of a game that has finished."""
     if not game.is_active:
@@ -56,7 +51,7 @@ def teams_of(game: Game) -> list[dict]:
 def _team_rows(game: Game) -> list[dict]:
     """Read the teams of a game with their players straight from the database."""
     return [{'pk': team.pk, 'name': team.name,
-             'players': [{'pk': player.pk, 'label': player_label(player)}
+             'players': [{'pk': player.pk, 'label': player.display_name}
                          for player in team.players.all()]}
             for team in game.teams.prefetch_related('players').all()]
 
@@ -86,11 +81,6 @@ def team_choices(game: Game, text: str = '',
     return [{'pk': team.pk, 'label': team.name} for team in teams[:limit]]
 
 
-def copyable_team_option(team: Team) -> str:
-    """Return how a host picks a team to copy: the game it played in, and its name."""
-    return f'{team.game.display_name} — {team.name}'
-
-
 def copyable_teams(guild: Guild, current: Game | None = None, text: str = '',
                    limit: int = MAX_CHOICES) -> list[dict]:
     """Return the teams of a guild's other games a host may copy.
@@ -103,7 +93,7 @@ def copyable_teams(guild: Guild, current: Game | None = None, text: str = '',
     if wanted:
         teams = teams.filter(Q(name__icontains=wanted)
                              | Q(game__name__icontains=wanted))
-    return [{'pk': team.pk, 'label': copyable_team_option(team)}
+    return [{'pk': team.pk, 'label': team.display_name}
             for team in teams[:limit]]
 
 
@@ -176,7 +166,7 @@ def remove_player(team: Team, host_member: DiscordMember, player: Player) -> Tea
     _require_editable(team.game)
     if not team.players.filter(pk=player.pk).exists():
         raise ValueError(_('%(name)s does not play for "%(team)s".')
-                         % {'name': player_label(player), 'team': team.name})
+                         % {'name': player.display_name, 'team': team.name})
     team.players.remove(player)
     logger.info('Game %s: %s left team %s', team.game_id, player, team.name)
     return team

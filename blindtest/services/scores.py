@@ -27,7 +27,7 @@ def _team_row(team: Team) -> dict:
 
 def _player_row(player) -> dict:
     """Return the leaderboard row of a player who guessed outside a team."""
-    return {'label': player.discord_name or player.username,
+    return {'label': player.display_name,
             'username': player.username, 'discord_name': player.discord_name,
             'kind': 'player', 'points': 0}
 

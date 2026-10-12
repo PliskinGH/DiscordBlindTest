@@ -20,7 +20,7 @@ from ..models import (Game, Question, QuizType, Round, ScoringMode,
                       question_problem)
 from .guessing import guess_form, guess_of, round_display
 from .guilds import require_host, target_channel_id, target_ping_role_id
-from .library import question_choices, question_line
+from .library import question_choices
 from .rounds import (create_round, current_round, queued_count,
                      require_visible, reveal_round, round_guesses)
 from .scores import _scored_rounds, game_scores
@@ -192,8 +192,7 @@ def _render_queued_options(game: Game) -> list[dict]:
                               'question__secondary_answer')
               .order_by('index')[:caching.QUEUE_CACHE_LIMIT])
     return [{'pk': round_.pk,
-             'label': f'#{round_.index} '
-                      f'{question_line(round_.question, with_answer=True)}',
+             'label': f'#{round_.index} {round_.question.full_display}',
              'media': bool(round_.question.media_url)}
             for round_ in rounds]
 
@@ -260,12 +259,6 @@ def copy_questions_by_pk(game: Game, host_member: DiscordMember, source_pk: int,
     return copy_questions(game, host_member, source, quiz_type)
 
 
-def game_option(game: Game, questions: int) -> str:
-    """Return how a host picks a game to copy: its name, size and state."""
-    return (f'{game.display_name} — {questions} question(s) — '
-            f'{game.State(game.state).display_name}')
-
-
 def game_choices(guild: Guild, current: Game | None = None, text: str = '',
                  limit: int = MAX_CHOICES) -> list[dict]:
     """Return the games of a guild a host may copy questions from."""
@@ -290,7 +283,7 @@ def _render_game_options(guild: Guild) -> list[dict] | bool:
     rows = list(_annotated_games(guild)[:caching.GAME_CACHE_LIMIT + 1])
     if len(rows) > caching.GAME_CACHE_LIMIT:
         return False
-    return [{'pk': game.pk, 'label': game_option(game, game.questions)}
+    return [{'pk': game.pk, 'label': game.full_display(game.questions)}
             for game in rows]
 
 
@@ -306,7 +299,7 @@ def _query_game_choices(guild: Guild, current: Game | None, text: str,
     games = copyable_games(guild, current)
     if text.strip():
         games = games.filter(name__icontains=text.strip())
-    return [{'pk': game.pk, 'label': game_option(game, game.questions)}
+    return [{'pk': game.pk, 'label': game.full_display(game.questions)}
             for game in games[:limit]]
 
 

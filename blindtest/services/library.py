@@ -36,17 +36,6 @@ def add_answer(guild: Guild, host_member: DiscordMember, text: str) -> Answer:
     return answer
 
 
-def question_line(question: Question, *, with_answer: bool = False) -> str:
-    """Return how a host identifies a question: its prompt, or its answer.
-    With ``with_answer`` the answer is appended when the question has a prompt
-    to show next to it; a prompt-less blind test question is its answer.
-    """
-    prompt = question.prompt.strip()
-    if not prompt or not with_answer:
-        return prompt or question.answer_text
-    return f'{prompt} — answer: {question.answer_text}'
-
-
 def split_answers(text: str) -> tuple[str, list[str]]:
     """Return the answer of a text and its variants, separated by ``|``."""
     parts = [part.strip() for part in str(text).split('|')]
@@ -169,7 +158,7 @@ def add_question(guild: Guild, host_member: DiscordMember, expected_text: str,
         if problem:
             raise ValueError(problem)
     logger.info('%s: question %s created', guild, question)
-    return {'pk': question.pk, 'label': question_line(question),
+    return {'pk': question.pk, 'label': question.display_name,
             'choices': question.choices.count(),
             'variants': question.expected_answer.variants.count()}
 
@@ -250,7 +239,7 @@ def remove_answer(guild: Guild, host_member: DiscordMember,
                or answer.choice_for_questions.first())
     if used_by is not None:
         raise ValueError(_('This answer is used by the question "%s" and '
-                           'cannot be removed.') % question_line(used_by))
+                           'cannot be removed.') % used_by.full_display)
     answer.delete()
     logger.info('%s: answer %s removed', guild, answer.text)
     return answer
@@ -290,7 +279,7 @@ def edit_question(guild: Guild, host_member: DiscordMember,
     question = editable_question(guild, host_member, pk)
     _edit_question(guild, host_member, question, **given)
     return {'pk': question.pk, 'fields': list(given),
-            'label': question_line(question, with_answer=True),
+            'label': question.full_display,
             'media_url': question.media_url,
             'choices': question.choices.count()}
 
@@ -360,7 +349,7 @@ def question_option(question: Question, guild: Guild | None = None) -> dict:
     ones of the global library every guild plays. ``author`` is the pk the
     spoiler rule is read with, so one cached list serves every viewer.
     """
-    return {'pk': question.pk, 'label': question_line(question, with_answer=True),
+    return {'pk': question.pk, 'label': question.full_display,
             'media': bool(question.media_url),
             'author': question.author_id,
             'own': guild is not None and question.guild_id == guild.pk}
@@ -504,12 +493,12 @@ def _query_library_choices(guild: Guild, viewer: Player | None, text: str,
 def question_row(question: Question) -> dict:
     """Return one question of a library, as its library page shows it."""
     return {'pk': question.pk,
-            'label': question_line(question, with_answer=True),
+            'label': question.full_display,
             'prompt': question.prompt,
             'answer': question.expected_answer.text,
             'artist': (question.secondary_answer.text
                        if question.secondary_answer else ''),
-            'author': (question.author.discord_name or question.author.username
+            'author': (question.author.display_name
                        if question.author else ''),
             'year': question.year, 'album': question.album,
             'media_url': question.media_url,

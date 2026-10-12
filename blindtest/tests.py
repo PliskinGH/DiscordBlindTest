@@ -39,7 +39,7 @@ from .services.library import (add_answer, add_question, add_variant,
                                edit_question, editable_question,
                                library_choices, own_questions,
                                question_by_pk,
-                               question_choices, question_line,
+                               question_choices,
                                remove_answer, remove_question,
                                remove_variant, set_show_all_questions,
                                set_variants,
@@ -1790,15 +1790,12 @@ class QuizTypeTests(GameTestCase):
         with self.assertRaises(ValidationError):
             round_.full_clean()
 
-    def test_the_question_line_shows_the_answer_only_to_a_host(self):
+    def test_the_display_names_show_the_answer_only_to_a_host(self):
         prompted = self._prompted_question()
-        self.assertEqual(question_line(self.question), 'Song (Band)')
-        self.assertEqual(question_line(self.question, with_answer=True),
-                         'Song (Band)')
-        self.assertEqual(question_line(prompted), 'Which album?')
-        self.assertEqual(
-            question_line(prompted, with_answer=True),
-            'Which album? — answer: Album')
+        self.assertEqual(self.question.display_name, 'Song (Band)')
+        self.assertEqual(self.question.full_display, 'Song (Band)')
+        self.assertEqual(prompted.display_name, 'Which album?')
+        self.assertEqual(prompted.full_display, 'Which album? — answer: Album')
 
     def test_a_question_never_shows_its_answer_when_stringified(self):
         self.assertEqual(str(self.question), f'Question #{self.question.pk}')

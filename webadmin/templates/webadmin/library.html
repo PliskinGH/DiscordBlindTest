@@ -55,14 +55,17 @@
   {% endfor %}
 </ul>
 {% else %}
-<p class="text-body-secondary">No question of this server yet.</p>
+<p class="text-body-secondary">No question on this server yet.</p>
 {% endif %}
 
+{% if unused_questions or unused_answers %}
 <h2 class="h5">Not used yet</h2>
 <p class="text-body-secondary">
   A question no game has played, and an answer no question uses, can be removed.
   Removing a question leaves its answers here.
 </p>
+{% endif %}
+
 {% if unused_questions %}
 <ul class="list-group mb-3">
   {% for question in unused_questions %}
@@ -76,6 +79,7 @@
   {% endfor %}
 </ul>
 {% endif %}
+
 {% if unused_answers %}
 <ul class="list-group mb-3">
   {% for answer in unused_answers %}
@@ -93,9 +97,6 @@
   </li>
   {% endfor %}
 </ul>
-{% endif %}
-{% if not unused_questions and not unused_answers %}
-<p class="text-body-secondary">Everything in this library is in use.</p>
 {% endif %}
 
 <div class="accordion mt-4" id="library-forms">

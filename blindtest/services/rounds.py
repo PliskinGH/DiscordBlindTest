@@ -15,7 +15,6 @@ from .guessing import guess_form, round_display
 from .guilds import require_host
 from .library import require_question_fits
 from .scores import game_scores
-from .teams import player_label
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +151,7 @@ def guess_line(guess: Guess) -> dict:
     player = guess.player
     team = guess.team
     return {'pk': guess.pk,
-            'player': player_label(player) if player is not None else '',
+            'player': player.display_name if player is not None else '',
             'team': team.name if team is not None else '',
             'text': guess.text, 'secondary_text': guess.secondary_text,
             'text_correct': bool(guess.text_correct),

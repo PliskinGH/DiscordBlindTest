@@ -8,9 +8,9 @@ from django.views import View
 from django.views.generic import TemplateView
 from blindtest.services.library import (add_question, edit_question,
                                         editable_question, own_questions,
-                                        question_line, remove_answer,
-                                        remove_question, set_variants,
-                                        unused_answers, unused_questions)
+                                        remove_answer, remove_question,
+                                        set_variants, unused_answers,
+                                        unused_questions)
 
 
 from ..forms import AddQuestionForm, EditQuestionForm, form_errors
@@ -108,7 +108,7 @@ class EditQuestionView(HostRequired, View):
         except (PermissionError, ValueError) as error:
             messages.error(request, error)
             return self._page(request, guild_id, question_pk)
-        label = question_line(question, with_answer=True)
+        label = question.full_display
         messages.success(request, f'Question updated: {label}.')
         return _back(guild_id)
 

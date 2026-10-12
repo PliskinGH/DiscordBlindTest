@@ -13,8 +13,8 @@ from blindtest.services.library import (add_answer, add_question, add_variant,
 
 
 from .. import embeds
+from ..choices import as_choices, resolve_pk
 from ..db import guild_for, player_for, run_db
-from ..ui import option_label, picked_pk
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +42,7 @@ async def question_autocomplete(
         guild = await guild_for(interaction)
         viewer = await player_for(interaction.user)
         questions = await run_db(library_choices, guild, viewer, current)
-        return [app_commands.Choice(name=option_label(choice),
-                                    value=str(choice['pk']))
-                for choice in questions]
+        return as_choices(questions)
     except Exception:
         logger.exception('Failed to offer question choices')
         return []
@@ -205,19 +203,21 @@ class LibraryCog(commands.Cog):
                             media: str = '') -> None:
         """Change the fields of a question of this server's library."""
         await interaction.response.defer(ephemeral=True)
+        guild = viewer = None
         if not question.strip().isdigit():
             guild = await guild_for(interaction)
             viewer = await player_for(interaction.user)
-            picked = await picked_pk(
-                lambda term: run_db(library_choices, guild, viewer, term),
-                question)
-            if picked is None:
-                await interaction.followup.send(
-                    'That question no longer exists.', ephemeral=True)
-                return
-            question = str(picked)
+        picked = await resolve_pk(
+            lambda term: run_db(library_choices, guild, viewer, term),
+            question)
+        if picked is None:
+            await interaction.followup.send(
+                'That question no longer exists.', ephemeral=True)
+            return
+        question = str(picked)
         try:
-            guild = await guild_for(interaction)
+            if guild is None:
+                guild = await guild_for(interaction)
             result = await run_db(edit_question, guild,
                                   interaction.user, question,
                                   **given_fields(answer=answer,

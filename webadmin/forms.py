@@ -12,13 +12,11 @@ from blindtest.constants import (GUESS_ANSWER_HINT, GUESS_ANSWER_LABEL,
                                  GUESS_SECONDARY_HINT, GUESS_SECONDARY_LABEL,
                                  MAX_CHOICES, MAX_YEAR)
 from blindtest.models import Game, Question, QuizType, ScoringMode, Team
-from blindtest.services.games import (copyable_games, create_game,
-                                      game_option)
+from blindtest.services.games import copyable_games, create_game
 from blindtest.services.guessing import submit_guess
-from blindtest.services.library import (add_question, edit_question, question_line,
+from blindtest.services.library import (add_question, edit_question,
                                         queueable_questions, split_answers)
-from blindtest.services.teams import (copyable_team_option,
-                                      copyable_team_queryset)
+from blindtest.services.teams import copyable_team_queryset
 
 QUESTION_SEARCH_FIELDS = ['prompt__icontains',
                           'expected_answer__text__icontains',
@@ -48,7 +46,7 @@ class QuestionWidget(FullWidthWidgetMixin, select2_forms.ModelSelect2MultipleWid
 
     def label_from_instance(self, question: Question) -> str:
         """Return the question as the host picks it, answer included."""
-        return question_line(question, with_answer=True)
+        return question.full_display
 
 
 TEAM_SEARCH_FIELDS = ['name__icontains', 'game__name__icontains']
@@ -62,7 +60,7 @@ class TeamWidget(FullWidthWidgetMixin, select2_forms.ModelSelect2Widget):
 
     def label_from_instance(self, team: Team) -> str:
         """Return the team as the host picks it, with the game it played in."""
-        return copyable_team_option(team)
+        return team.display_name
 
 
 class GameWidget(FullWidthWidgetMixin, select2_forms.ModelSelect2Widget):
@@ -72,7 +70,7 @@ class GameWidget(FullWidthWidgetMixin, select2_forms.ModelSelect2Widget):
 
     def label_from_instance(self, game: Game) -> str:
         """Return the game as the host picks it, with its size and state."""
-        return game_option(game, game.questions)
+        return game.full_display(game.questions)
 
 
 def form_errors(form: forms.Form) -> str:

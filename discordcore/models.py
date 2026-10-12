@@ -93,8 +93,13 @@ class Player(AbstractUser):
         verbose_name = _('player')
         verbose_name_plural = _('players')
 
-    def __str__(self) -> str:
+    @property
+    def display_name(self) -> str:
+        """Return how the player is shown, Discord name preferred."""
         return self.discord_name or self.username
+
+    def __str__(self) -> str:
+        return self.display_name
 
 
 class GuildManager(models.Manager):

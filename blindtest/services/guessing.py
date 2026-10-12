@@ -12,7 +12,6 @@ from .. import matching
 from ..constants import MAX_CHOICES
 from ..models import (Answer, Guess, Question, QuizType, Round,
                       ScoringMode)
-from .library import question_line
 from .teams import team_at_round
 
 logger = logging.getLogger(__name__)
@@ -30,8 +29,8 @@ def round_display(round_: Round) -> dict:
             'prompt': question.effective_prompt,
             'prompt_set': bool(question.prompt.strip()),
             'media_url': question.media_url,
-            'question_text': question_line(question),
-            'host_text': question_line(question, with_answer=True),
+            'question_text': question.display_name,
+            'host_text': question.full_display,
             'answer_text': question.answer_text,
             'expected': question.expected_answer.text,
             'type': round_.effective_type,

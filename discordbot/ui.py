@@ -8,11 +8,12 @@ from typing import TYPE_CHECKING
 
 import discord
 
-from blindtest.constants import (CHOICE_NAME_LIMIT, GUESS_ANSWER_HINT,
-                                 GUESS_ANSWER_LABEL, GUESS_PICK_PLACEHOLDER,
+from blindtest.constants import (GUESS_ANSWER_HINT, GUESS_ANSWER_LABEL,
+                                 GUESS_PICK_PLACEHOLDER,
                                  GUESS_SECONDARY_HINT, GUESS_SECONDARY_LABEL,
                                  MAX_CHOICES)
 
+from .choices import option_label
 from .embeds import clip
 
 if TYPE_CHECKING:
@@ -50,45 +51,6 @@ END_QUIZ_LABEL = 'End the game'
 def pick_max(choices: 'list[dict] | None') -> int:
     """Return how many options a picker may select at once."""
     return max(1, min(MAX_CHOICES, len(choices or [])))
-
-
-def option_label(choice: dict) -> str:
-    """Return the label of a picker option, flagged for media and clipped."""
-    prefix = '🎵 ' if choice.get('media') else ''
-    return (prefix + choice['label'])[:CHOICE_NAME_LIMIT]
-
-
-def choice_term(raw: str) -> str:
-    """Return a displayed label as a choice search term, decorations undone."""
-    return raw.strip().removeprefix('🎵 ').removesuffix('…').strip()
-
-
-def choice_pk(raw: str, choices: 'list[dict] | None') -> int | None:
-    """Return the pk a command option names: by value first, then by label."""
-    wanted = str(raw).strip()
-    for choice in choices or []:
-        if str(choice['pk']) == wanted:
-            return int(choice['pk'])
-    for choice in choices or []:
-        if wanted in (choice['label'], option_label(choice)):
-            return int(choice['pk'])
-    return None
-
-
-async def picked_pk(fetch, raw: str) -> int | None:
-    """Return the pk an option names, reading the choices through its term.
-
-    ``fetch`` receives a search term and returns the choices. A composed
-    label is retried by its head and its tail, since a server side search
-    matches the fields the label was built from rather than the label.
-    """
-    term = choice_term(raw)
-    picked = choice_pk(raw, await fetch(term))
-    if picked is None and ' — ' in term:
-        picked = choice_pk(raw, await fetch(term.split(' — ')[0]))
-        if picked is None:
-            picked = choice_pk(raw, await fetch(term.rsplit(' — ')[-1]))
-    return picked
 
 
 def pick_options(choices: 'list[dict] | None') -> list[discord.SelectOption]:

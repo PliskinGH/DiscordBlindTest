@@ -1,0 +1,16 @@
+{% load fullurl %}
+
+<title>{{ title }}</title>
+<meta name="title" content="{{ title }}">
+<meta name="description" content="{{ description }}">
+<meta property="og:type" content="website">
+<meta property="og:url" content="{{ request.build_absolute_uri }}">
+<meta property="og:site_name" content="{{ site_title }}">
+<meta property="og:title" content="{{ title }}">
+<meta property="og:description" content="{{ description }}">
+<meta property="og:image" content="{% fullstatic 'webadmin/img/logo-512.png' %}">
+<meta property="og:image:alt" content="{{ site_title }} logo">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{ title }}">
+<meta name="twitter:description" content="{{ description }}">
+<meta name="twitter:image" content="{% fullstatic 'webadmin/img/logo-512.png' %}">

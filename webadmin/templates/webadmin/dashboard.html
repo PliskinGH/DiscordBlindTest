@@ -1,5 +1,7 @@
 {% extends 'webadmin/base.html' %}
-{% block title %}Your servers{% endblock %}
+{% block meta %}
+{% include 'webadmin/meta.html' with title='Your servers | '|add:site_title description='Manager the Discord bot on your servers.' site_title=site_title %}
+{% endblock %}
 {% block content %}
 <h1 class="h4 mb-4">Your servers</h1>
 

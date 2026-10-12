@@ -1,6 +1,11 @@
 {% extends 'webadmin/base.html' %}
+
 {% load crispy_forms_tags %}
-{% block title %}{{ guild.name }} — library{% endblock %}
+
+{% block meta %}
+{% include 'webadmin/meta.html' with title='Library | '|add:guild.name|add:' | '|add:site_title description='Manage the question library of '|add:guild.name|add:' from the web.' site_title=site_title %}
+{% endblock %}
+
 {% block content %}
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb">

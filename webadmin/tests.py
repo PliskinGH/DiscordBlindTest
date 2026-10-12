@@ -110,6 +110,15 @@ class LoginPageTests(CacheTestCase):
         response = self.client.get(reverse('webadmin:login'))
         self.assertEqual(response.status_code, 200)
 
+    def test_login_page_meta_names_the_site(self):
+        response = self.client.get(reverse('webadmin:login'))
+        self.assertContains(response, '<title>Log in | Discord Blind Test</title>', html=True)
+        self.assertContains(response, 'property="og:site_name" content="Discord Blind Test"')
+        self.assertContains(response, 'property="og:title" content="Log in | Discord Blind Test"')
+        self.assertContains(response, 'Blind Test games from your browser.')
+        self.assertContains(response, 'rel="icon" type="image/svg+xml"')
+        self.assertContains(response, 'webadmin/img/logo-512.png')
+
     def test_dashboard_requires_login(self):
         response = self.client.get(reverse('webadmin:dashboard'))
         self.assertRedirects(
@@ -180,6 +189,22 @@ class GuildPageTests(CacheTestCase):
         response = self.client.get(reverse('webadmin:dashboard'))
         self.assertContains(response, 'Server Seven')
 
+    @mock.patch('webadmin.discord_api.fetch_bot_guild_ids', return_value=set())
+    def test_dashboard_meta_names_the_site(self, bot_guilds):
+        response = self.client.get(reverse('webadmin:dashboard'))
+        self.assertContains(response, '<title>Your servers | Discord Blind Test</title>', html=True)
+        self.assertContains(response, 'property="og:site_name" content="Discord Blind Test"')
+        self.assertContains(response, 'property="og:title" content="Your servers | Discord Blind Test"')
+        self.assertContains(response, 'Blind Test bot')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_guild_page_meta_names_the_site(self, roles):
+        response = self.client.get(reverse('webadmin:guild', args=[7]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<title>Server Seven | Discord Blind Test</title>', html=True)
+        self.assertContains(response, 'property="og:title" content="Server Seven | Discord Blind Test"')
+        self.assertContains(response, 'Blind Test web admin')
+
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_guild_page_shows_the_server(self, roles):
         response = self.client.get(reverse('webadmin:guild', args=[7]))
@@ -243,6 +268,13 @@ class GuildSectionTests(CacheTestCase):
         self.assertContains(response, 'Add a question')
         self.assertContains(response, 'name="variants"')
         self.assertContains(response, 'type="submit"')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_library_meta_names_the_site(self, roles):
+        response = self.client.get(reverse('webadmin:library', args=[7]))
+        self.assertContains(response, '<title>Library | Server Seven | Discord Blind Test</title>', html=True)
+        self.assertContains(response, 'property="og:title" content="Library | Server Seven | Discord Blind Test"')
+        self.assertContains(response, 'Blind Test library')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_plain_member_does_not_reach_the_library(self, roles):
@@ -314,6 +346,20 @@ class GuildSectionTests(CacheTestCase):
         self.assertContains(response, 'value="Give host rights"')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_settings_meta_names_the_site(self, roles):
+        response = self.client.get(reverse('webadmin:settings', args=[7]))
+        self.assertContains(response, '<title>Settings | Server Seven | Discord Blind Test</title>', html=True)
+        self.assertContains(response, 'property="og:title" content="Settings | Server Seven | Discord Blind Test"')
+        self.assertContains(response, 'Blind Test games of')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_games_meta_names_the_site(self, roles):
+        response = self.client.get(reverse('webadmin:games', args=[7]))
+        self.assertContains(response, '<title>Games | Server Seven | Discord Blind Test</title>', html=True)
+        self.assertContains(response, 'property="og:title" content="Games | Server Seven | Discord Blind Test"')
+        self.assertContains(response, 'Blind Test games of')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_host_saves_a_question(self, roles):
         self.client.post(reverse('webadmin:question_add', args=[7]),
                          {'answer': 'Wonderwall', 'artist': 'Oasis',
@@ -361,6 +407,15 @@ class GuildSectionTests(CacheTestCase):
             {'answer': '', 'artist': '', 'prompt': '', 'choices': '',
              'year': '', 'media': '', 'variants': ''}, follow=True)
         self.assertContains(response, 'A question needs an answer.')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_question_meta_names_the_site(self, roles):
+        question = self.guild.questions.create(
+            expected_answer=self.guild.answers.create(text='Mine'))
+        response = self.client.get(reverse('webadmin:question_edit', args=[7, question.pk]))
+        self.assertContains(response, '<title>Edit a question | Server Seven | Discord Blind Test</title>', html=True)
+        self.assertContains(response, 'property="og:title" content="Edit a question | Server Seven | Discord Blind Test"')
+        self.assertContains(response, 'Blind Test question of')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_the_library_lists_only_this_servers_questions(self, roles):
@@ -1132,6 +1187,12 @@ class GameControlTests(CacheTestCase):
         self.assertContains(response, 'Reds')
         self.assertContains(response, 'guestie')
         self.assertContains(response, 'Nobody has guessed for this team yet.')
+
+    def test_game_meta_names_the_site(self):
+        game = self._game()
+        response = self.client.get(self._url('game', game.pk))
+        self.assertContains(response, f'<title>{game.display_name} — control room | Server Seven | Discord Blind Test</title>', html=True)
+        self.assertContains(response, 'Blind Test control room')
 
     def test_a_host_copies_a_team_of_another_game_with_its_members(self):
         past = self._ended_game_with_a_team()[1]
@@ -1905,6 +1966,13 @@ class GameControlTests(CacheTestCase):
                             'Recent broadcasts')
         self.assertContains(self.client.get(self._url('game_live', game.pk)),
                             'hx-swap-oob')
+
+    @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
+    def test_guess_meta_names_the_site(self, roles):
+        game = self._running_round()
+        response = self.client.get(self._url('game_guess', game.pk))
+        self.assertContains(response, f'<title>Guess | {game.display_name} | Discord Blind Test</title>', html=True)
+        self.assertContains(response, 'Guess the round in play')
 
     @mock.patch('webadmin.discord_api.fetch_member_roles', return_value=[])
     def test_a_member_is_not_offered_the_posts_of_a_game(self, roles):

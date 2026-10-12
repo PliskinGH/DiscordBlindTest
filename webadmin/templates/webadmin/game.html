@@ -1,7 +1,13 @@
 {% extends 'webadmin/base.html' %}
+
 {% load crispy_forms_tags %}
-{% block title %}{{ state.game_name }} — control room{% endblock %}
+
+{% block meta %}
+{% include 'webadmin/meta.html' with title=state.game_name|add:' — Control Room | '|add:guild.name|add:' | '|add:site_title description='Host '|add:state.game_name|add:' from the web: queue rounds, follow guesses and publish scores.' site_title=site_title %}
+{% endblock %}
+
 {% block media %}{{ queue_form.media }}{{ copy_form.media }}{{ team_copy_form.media }}{% endblock %}
+
 {% block content %}
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb">

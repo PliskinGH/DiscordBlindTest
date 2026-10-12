@@ -1,7 +1,13 @@
 {% extends 'webadmin/base.html' %}
+
 {% load crispy_forms_tags %}
-{% block title %}{{ guild.name }} — settings{% endblock %}
+
+{% block meta %}
+{% include 'webadmin/meta.html' with title='Settings | '|add:guild.name|add:' | '|add:site_title description='Manage the settings of the bot on the '|add:guild.name|add:' server.' site_title=site_title %}
+{% endblock %}
+
 {% block media %}{{ channel_form.media }}{% endblock %}
+
 {% block content %}
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb">

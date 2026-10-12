@@ -1,7 +1,13 @@
 {% extends 'webadmin/base.html' %}
+
 {% load crispy_forms_tags %}
-{% block title %}{{ game.display_name }} — guess{% endblock %}
+
+{% block meta %}
+{% include 'webadmin/meta.html' with title='Guess | '|add:game.display_name|add:' | '|add:site_title description='Guess the round in play in '|add:game.display_name|add:' from the web.' site_title=site_title %}
+{% endblock %}
+
 {% block media %}{{ form.media }}{% endblock %}
+
 {% block content %}
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb">

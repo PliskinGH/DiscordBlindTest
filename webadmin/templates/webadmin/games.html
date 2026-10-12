@@ -1,7 +1,13 @@
 {% extends 'webadmin/base.html' %}
+
 {% load crispy_forms_tags %}
-{% block title %}{{ guild.name }} — games{% endblock %}
+
+{% block meta %}
+{% include 'webadmin/meta.html' with title='Games | '|add:guild.name|add:' | '|add:site_title description='Manage the games of '|add:guild.name|add:'.' site_title=site_title %}
+{% endblock %}
+
 {% block media %}{{ setup_form.media }}{% endblock %}
+
 {% block content %}
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb">

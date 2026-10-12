@@ -1,5 +1,9 @@
 {% extends 'webadmin/base.html' %}
-{% block title %}{{ guild.name }}{% endblock %}
+
+{% block meta %}
+{% include 'webadmin/meta.html' with title=guild.name|add:' | '|add:site_title description='Manage the bot on the '|add:guild.name|add:' server from the web.' site_title=site_title %}
+{% endblock %}
+
 {% block content %}
 <h1 class="h4">{{ guild.name }}</h1>
 <p class="mb-2">

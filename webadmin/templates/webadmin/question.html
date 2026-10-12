@@ -1,6 +1,11 @@
 {% extends 'webadmin/base.html' %}
+
 {% load crispy_forms_tags %}
-{% block title %}Edit a question — {{ guild.name }}{% endblock %}
+
+{% block meta %}
+{% include 'webadmin/meta.html' with title='Edit a question | '|add:guild.name|add:' | '|add:site_title description='Edit a question of '|add:guild.name|add:' and its answers.' site_title=site_title %}
+{% endblock %}
+
 {% block content %}
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb">
